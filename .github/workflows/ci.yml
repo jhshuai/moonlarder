@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install MoonBit (unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Install MoonBit (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://cli.moonbitlang.com/install/powershell.ps1 | iex
+          echo "$HOME\.moon\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - run: moon update
+      - run: moon check --target all --deny-warn
+      - run: moon test --target wasm-gc
+      - run: moon test --target wasm
+      - run: moon test --target js
+      - run: moon fmt --check
+      - run: moon info --target all

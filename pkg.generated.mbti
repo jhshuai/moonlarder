@@ -1,0 +1,48 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "jhshuai/moonlarder"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+
+// Errors
+
+// Types and methods
+pub struct Larder[K, V] {
+  table : Map[K, Slot[V]]
+  capacity : Int
+  default_ttl_ms : Int64?
+  mut hit_count : Int
+  mut miss_count : Int
+  mut eviction_count : Int
+  mut expiration_count : Int
+}
+pub fn[K, V] Larder::capacity(Self[K, V]) -> Int
+pub fn[K, V] Larder::clear(Self[K, V]) -> Unit
+pub fn[K : Hash + Eq, V] Larder::contains(Self[K, V], K, now_ms~ : Int64) -> Bool
+pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
+pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
+pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::purge_expired(Self[K, V], now_ms~ : Int64) -> Int
+pub fn[K : Hash + Eq, V] Larder::remove(Self[K, V], K) -> V?
+pub fn[K : Hash + Eq, V] Larder::set(Self[K, V], K, V, now_ms~ : Int64, ttl_ms? : Int64) -> Unit
+pub fn[K, V] Larder::size(Self[K, V]) -> Int
+pub fn[K, V] Larder::stats(Self[K, V]) -> Stats
+
+pub struct Slot[V] {
+  value : V
+  expire_at : Int64?
+}
+
+pub(all) struct Stats {
+  hits : Int
+  misses : Int
+  evictions : Int
+  expirations : Int
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits
