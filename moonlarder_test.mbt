@@ -136,6 +136,47 @@ test "get_or_insert_with recomputes after the entry expires" {
 }
 
 ///|
+test "peek reads a value without affecting recency or counters" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  assert_eq(c.peek("a", now_ms=0L), Some(1))
+  c.set("c", 3, now_ms=0L) // "a" was not touched by peek, so it's still LRU
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.stats(), { hits: 0, misses: 1, evictions: 1, expirations: 0, })
+}
+
+///|
+test "peek on an expired entry reads as absent but leaves it in place" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L, ttl_ms=10L)
+  assert_eq(c.peek("a", now_ms=10L), None)
+  assert_eq(c.size(), 1) // still present, just not surfaced by peek
+}
+
+///|
+test "is_empty reflects presence of entries" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  assert_true(c.is_empty())
+  c.set("a", 1, now_ms=0L)
+  assert_false(c.is_empty())
+  ignore(c.remove("a"))
+  assert_true(c.is_empty())
+}
+
+///|
+test "keys and values are ordered least- to most-recently-used" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=3)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.keys().to_array(), ["a", "b", "c"])
+  assert_eq(c.values().to_array(), [1, 2, 3])
+  ignore(c.get("a", now_ms=0L)) // moves "a" to the most-recently-used end
+  assert_eq(c.keys().to_array(), ["b", "c", "a"])
+}
+
+///|
 test "capacity is reported back as given at construction" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=7)
   assert_eq(c.capacity(), 7)

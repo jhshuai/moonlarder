@@ -150,6 +150,44 @@ pub fn[K : Hash + Eq, V] Larder::contains(
 }
 
 ///|
+/// Reads `key` without affecting recency or hit/miss counters.
+///
+/// Use this for inspection and debugging where `get`'s side effects
+/// (marking the entry most-recently-used, counting a hit or miss) would
+/// be misleading. An expired entry still reads as `None`, but unlike
+/// `get` it is left in place rather than removed.
+pub fn[K : Hash + Eq, V] Larder::peek(
+  self : Larder[K, V],
+  key : K,
+  now_ms~ : Int64,
+) -> V? {
+  match self.table.get(key) {
+    None => None
+    Some(slot) => if slot.is_expired(now_ms) { None } else { Some(slot.value) }
+  }
+}
+
+///|
+/// Whether the cache holds no entries.
+pub fn[K, V] Larder::is_empty(self : Larder[K, V]) -> Bool {
+  self.table.is_empty()
+}
+
+///|
+/// Keys in least- to most-recently-used order, including any that have
+/// expired but haven't been purged yet.
+pub fn[K, V] Larder::keys(self : Larder[K, V]) -> Iter[K] {
+  self.table.keys()
+}
+
+///|
+/// Values in least- to most-recently-used order, including any that have
+/// expired but haven't been purged yet.
+pub fn[K, V] Larder::values(self : Larder[K, V]) -> Iter[V] {
+  self.table.values().map(fn(slot) { slot.value })
+}
+
+///|
 /// Inserts or updates `key`, moving it to the most-recently-used position.
 ///
 /// `ttl_ms`, when given, overrides the cache's `default_ttl_ms` for this
