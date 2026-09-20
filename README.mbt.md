@@ -67,6 +67,8 @@ An entry whose own weight exceeds `capacity` is still admitted alone
 - `set(key, value, now_ms~, ttl_ms?)` — insert or update, evicting
   least-recently-used entries if the cache is now over capacity
 - `get_or_insert_with(key, now_ms~, ttl_ms?, compute)` — memoize
+- `try_get_or_insert_with(key, now_ms~, ttl_ms?, compute)` — memoize a
+  loader that can fail; the error propagates and nothing is stored
 - `touch_ttl(key, now_ms~, ttl_ms?)` — refresh an entry's expiry in place
   (sliding expiration) without needing its value
 - `contains(key, now_ms~)` — check presence without affecting recency
@@ -77,6 +79,18 @@ An entry whose own weight exceeds `capacity` is still admitted alone
 - `stats()` — hit/miss/eviction/expiration counters
 
 See `pkg.generated.mbti` for the full signature list.
+
+## Benchmarks
+
+```
+moon bench --target wasm-gc
+```
+
+`moonlarder_bench_test.mbt` covers `get` (hit and miss), `set` at
+steady state (every insert evicting one entry), and
+`get_or_insert_with` on a hit, against a cache pre-warmed with 1,000
+entries. `native` needs a C compiler on `PATH` the same as `moon test`
+does; `wasm-gc` doesn't.
 
 ## Notes
 
