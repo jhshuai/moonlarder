@@ -273,3 +273,72 @@ test "resize downward evicts the least-recently-used entries immediately" {
   assert_eq(c.get("c", now_ms=0L), Some(3))
   assert_eq(c.get("d", now_ms=0L), Some(4))
 }
+
+///|
+test "an unweighted cache treats capacity as an entry count" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=3)
+  c.set("a", 1, now_ms=0L)
+  assert_eq(c.weight(), 1)
+  assert_eq(c.weight(), c.size())
+}
+
+///|
+test "a weigher turns capacity into a weight budget" {
+  let c : @moonlarder.Larder[String, String] = @moonlarder.Larder::new(
+    capacity=10,
+    weigher=fn(_key, value : String) { value.length() },
+  )
+  c.set("a", "12345", now_ms=0L) // weight 5
+  c.set("b", "123", now_ms=0L) // weight 3, total 8
+  assert_eq(c.weight(), 8)
+  assert_eq(c.size(), 2)
+  assert_eq(c.stats().evictions, 0)
+  c.set("c", "1234", now_ms=0L) // weight 4, total would be 12 > 10
+  // "a" is least-recently-used, so it goes; that alone (8 - 5 + 4 = 7)
+  // is already back within budget.
+  assert_eq(c.weight(), 7)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some("123"))
+  assert_eq(c.get("c", now_ms=0L), Some("1234"))
+}
+
+///|
+test "a single entry heavier than capacity is admitted alone" {
+  let c : @moonlarder.Larder[String, String] = @moonlarder.Larder::new(
+    capacity=5,
+    weigher=fn(_key, value : String) { value.length() },
+  )
+  c.set("small", "ab", now_ms=0L)
+  c.set("huge", "0123456789", now_ms=0L) // weight 10, alone already over capacity
+  assert_eq(c.size(), 1)
+  assert_eq(c.weight(), 10)
+  assert_eq(c.get("small", now_ms=0L), None)
+  assert_eq(c.get("huge", now_ms=0L), Some("0123456789"))
+}
+
+///|
+test "updating a weighted key's value adjusts total weight in place" {
+  let c : @moonlarder.Larder[String, String] = @moonlarder.Larder::new(
+    capacity=10,
+    weigher=fn(_key, value : String) { value.length() },
+  )
+  c.set("a", "12345", now_ms=0L) // weight 5
+  c.set("a", "12", now_ms=0L) // weight 2, replacing the old one, not adding
+  assert_eq(c.weight(), 2)
+  assert_eq(c.size(), 1)
+}
+
+///|
+test "resize honors a weigher's budget, not entry count" {
+  let c : @moonlarder.Larder[String, String] = @moonlarder.Larder::new(
+    capacity=20,
+    weigher=fn(_key, value : String) { value.length() },
+  )
+  c.set("a", "12345", now_ms=0L) // weight 5
+  c.set("b", "12345", now_ms=0L) // weight 5, total 10
+  c.resize(6)
+  assert_eq(c.size(), 1)
+  assert_eq(c.weight(), 5)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some("12345"))
+}

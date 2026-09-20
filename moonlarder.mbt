@@ -6,10 +6,18 @@
 /// is looked up. The clock is supplied by the caller on every call that
 /// needs one (`now_ms`) instead of being read internally, so behavior stays
 /// deterministic and testable regardless of target or wall-clock source.
+///
+/// By default `capacity` counts entries (every entry weighs 1). Pass
+/// `weigher` to `new` to have it count something else instead - total
+/// byte size, say, for a cache of blobs where a handful of large ones
+/// shouldn't crowd out many small ones the way plain entry-counting
+/// would let them.
 pub struct Larder[K, V] {
   table : Map[K, Slot[V]]
   mut capacity : Int
   default_ttl_ms : Int64?
+  weigher : (K, V) -> Int
+  mut current_weight : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int
@@ -20,6 +28,7 @@ pub struct Larder[K, V] {
 pub struct Slot[V] {
   value : V
   expire_at : Int64? // None means the entry never expires on its own
+  weight : Int // cached at insertion time so eviction never recomputes it
 }
 
 ///|
@@ -32,15 +41,22 @@ pub(all) struct Stats {
 } derive(Eq, Debug)
 
 ///|
-/// Creates an empty cache that holds at most `capacity` entries.
+/// Creates an empty cache bounded by `capacity`.
 ///
 /// `default_ttl_ms`, when given, is the time-to-live applied to entries
 /// that don't specify their own via `set`'s `ttl_ms` argument. Leaving both
 /// unset means an entry never expires on its own and is only removed by
 /// LRU eviction, `remove`, or `clear`.
+///
+/// `weigher`, when given, turns `capacity` into a weight budget rather
+/// than a plain entry count: each entry contributes `weigher(key,
+/// value)` instead of 1. An entry whose own weight exceeds `capacity` is
+/// still admitted alone (evicting everything else) rather than being
+/// rejected, since `set` never fails.
 pub fn[K : Hash + Eq, V] Larder::new(
   capacity~ : Int,
   default_ttl_ms? : Int64,
+  weigher? : (K, V) -> Int,
 ) -> Larder[K, V] {
   guard capacity > 0 else {
     abort("Larder::new: capacity must be positive, got \{capacity}")
@@ -49,6 +65,11 @@ pub fn[K : Hash + Eq, V] Larder::new(
     table: {},
     capacity,
     default_ttl_ms,
+    weigher: match weigher {
+      Some(weigher) => weigher
+      None => fn(_key, _value) { 1 }
+    },
+    current_weight: 0,
     hit_count: 0,
     miss_count: 0,
     eviction_count: 0,
@@ -98,11 +119,35 @@ fn[K : Hash + Eq, V] Larder::touch(
 /// Evicts the least-recently-used entry, if any, without touching stats
 /// other than `eviction_count`.
 fn[K : Hash + Eq, V] Larder::evict_oldest(self : Larder[K, V]) -> Unit {
-  for key in self.table.keys() {
+  for key, slot in self.table {
     self.table.remove(key)
+    self.current_weight -= slot.weight
     self.eviction_count += 1
     break
   }
+}
+
+///|
+/// Evicts least-recently-used entries until `current_weight` is back
+/// within `capacity`, always leaving at least one entry in place so a
+/// single entry heavier than `capacity` doesn't evict itself.
+fn[K : Hash + Eq, V] Larder::enforce_capacity(self : Larder[K, V]) -> Unit {
+  while self.current_weight > self.capacity && self.table.length() > 1 {
+    self.evict_oldest()
+  }
+}
+
+///|
+/// Removes an entry already known to be expired, on the lazy-expiry path
+/// shared by `get` and `touch_ttl`.
+fn[K : Hash + Eq, V] Larder::drop_expired(
+  self : Larder[K, V],
+  key : K,
+  slot : Slot[V],
+) -> Unit {
+  self.table.remove(key)
+  self.current_weight -= slot.weight
+  self.expiration_count += 1
 }
 
 ///|
@@ -123,9 +168,8 @@ pub fn[K : Hash + Eq, V] Larder::get(
     }
     Some(slot) =>
       if slot.is_expired(now_ms) {
-        self.table.remove(key)
+        self.drop_expired(key, slot)
         self.miss_count += 1
-        self.expiration_count += 1
         None
       } else {
         self.touch(key, slot)
@@ -208,10 +252,10 @@ pub fn[K, V] Larder::to_array(
 /// Inserts or updates `key`, moving it to the most-recently-used position.
 ///
 /// `ttl_ms`, when given, overrides the cache's `default_ttl_ms` for this
-/// entry only. If inserting pushes the cache over `capacity`, the
-/// least-recently-used entry (which may be the one just inserted, if
-/// `capacity` is smaller than 1 - impossible - or if every other entry was
-/// touched more recently) is evicted.
+/// entry only. If inserting pushes total weight over `capacity`,
+/// least-recently-used entries (which may include the one just inserted,
+/// if it doesn't fit even alone) are evicted until it fits or only one
+/// entry remains.
 pub fn[K : Hash + Eq, V] Larder::set(
   self : Larder[K, V],
   key : K,
@@ -220,12 +264,15 @@ pub fn[K : Hash + Eq, V] Larder::set(
   ttl_ms? : Int64,
 ) -> Unit {
   let expire_at = self.resolve_expiry(now_ms, ttl_ms)
-  let is_new_key = !self.table.contains(key)
-  self.table.remove(key)
-  self.table.set(key, { value, expire_at, })
-  if is_new_key && self.table.length() > self.capacity {
-    self.evict_oldest()
+  let weight = (self.weigher)(key, value)
+  match self.table.get(key) {
+    Some(old_slot) => self.current_weight -= old_slot.weight
+    None => ()
   }
+  self.table.remove(key)
+  self.table.set(key, { value, expire_at, weight, })
+  self.current_weight += weight
+  self.enforce_capacity()
 }
 
 ///|
@@ -249,11 +296,11 @@ pub fn[K : Hash + Eq, V] Larder::touch_ttl(
     None => false
     Some(slot) =>
       if slot.is_expired(now_ms) {
-        self.table.remove(key)
+        self.drop_expired(key, slot)
         false
       } else {
         let expire_at = self.resolve_expiry(now_ms, ttl_ms)
-        self.touch(key, { value: slot.value, expire_at, })
+        self.touch(key, { value: slot.value, expire_at, weight: slot.weight, })
         true
       }
   }
@@ -291,6 +338,7 @@ pub fn[K : Hash + Eq, V] Larder::remove(self : Larder[K, V], key : K) -> V? {
     None => None
     Some(slot) => {
       self.table.remove(key)
+      self.current_weight -= slot.weight
       Some(slot.value)
     }
   }
@@ -301,6 +349,7 @@ pub fn[K : Hash + Eq, V] Larder::remove(self : Larder[K, V], key : K) -> V? {
 /// counters to zero.
 pub fn[K, V] Larder::clear(self : Larder[K, V]) -> Unit {
   self.table.clear()
+  self.current_weight = 0
   self.hit_count = 0
   self.miss_count = 0
   self.eviction_count = 0
@@ -322,11 +371,12 @@ pub fn[K : Hash + Eq, V] Larder::retain(
   let dropped = []
   for key, slot in self.table {
     if !predicate(key, slot.value) {
-      dropped.push(key)
+      dropped.push((key, slot.weight))
     }
   }
-  for key in dropped {
-    self.table.remove(key)
+  for entry in dropped {
+    self.table.remove(entry.0)
+    self.current_weight -= entry.1
   }
   dropped.length()
 }
@@ -346,11 +396,12 @@ pub fn[K : Hash + Eq, V] Larder::purge_expired(
   let expired = []
   for key, slot in self.table {
     if slot.is_expired(now_ms) {
-      expired.push(key)
+      expired.push((key, slot.weight))
     }
   }
-  for key in expired {
-    self.table.remove(key)
+  for entry in expired {
+    self.table.remove(entry.0)
+    self.current_weight -= entry.1
     self.expiration_count += 1
   }
   expired.length()
@@ -364,16 +415,26 @@ pub fn[K, V] Larder::size(self : Larder[K, V]) -> Int {
 }
 
 ///|
-/// The maximum number of entries this cache holds before evicting.
+/// The maximum weight this cache holds before evicting - an entry count,
+/// unless `new` was given a `weigher`.
 pub fn[K, V] Larder::capacity(self : Larder[K, V]) -> Int {
   self.capacity
 }
 
 ///|
-/// Changes the maximum number of entries this cache holds.
+/// The current total weight of every stored entry (expired or not) - an
+/// entry count, unless `new` was given a `weigher`. Always `<= capacity`,
+/// except immediately after construction with a single entry whose own
+/// weight already exceeds it.
+pub fn[K, V] Larder::weight(self : Larder[K, V]) -> Int {
+  self.current_weight
+}
+
+///|
+/// Changes the cache's weight budget (see `new`'s `weigher` parameter).
 ///
 /// Growing takes effect immediately with no other side effect. Shrinking
-/// below the current size evicts the least-recently-used entries right
+/// below the current weight evicts the least-recently-used entries right
 /// away, the same as `set` would have, rather than waiting for the next
 /// insert to notice the cache is over budget.
 pub fn[K : Hash + Eq, V] Larder::resize(
@@ -384,9 +445,7 @@ pub fn[K : Hash + Eq, V] Larder::resize(
     abort("Larder::resize: capacity must be positive, got \{new_capacity}")
   }
   self.capacity = new_capacity
-  while self.table.length() > self.capacity {
-    self.evict_oldest()
-  }
+  self.enforce_capacity()
 }
 
 ///|

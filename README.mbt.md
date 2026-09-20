@@ -43,17 +43,37 @@ Per-entry TTL overrides the cache-wide default:
 cache.set("short-lived", "value", now_ms=0L, ttl_ms=5_000L)
 ```
 
+By default, `capacity` counts entries. Pass `weigher` to weigh entries by
+something else instead - total byte size, say, so a handful of large
+values can't crowd out many small ones the way plain entry-counting
+would let them:
+
+```moonbit nocheck
+///|
+let by_size : Larder[String, Bytes] = Larder::new(
+  capacity=10 * 1024 * 1024, // 10 MiB total, not 10 MiB per entry
+  weigher=fn(_key, value) { value.length() },
+)
+```
+
+An entry whose own weight exceeds `capacity` is still admitted alone
+(evicting everything else) rather than rejected, since `set` never fails.
+
 ## API
 
-- `Larder::new(capacity~, default_ttl_ms?)` — create a cache
+- `Larder::new(capacity~, default_ttl_ms?, weigher?)` — create a cache
 - `get(key, now_ms~)` — look up a value, refreshing its recency on a hit
-- `set(key, value, now_ms~, ttl_ms?)` — insert or update, evicting the
-  least-recently-used entry if the cache is now over capacity
+- `peek(key, now_ms~)` — read a value without affecting recency or stats
+- `set(key, value, now_ms~, ttl_ms?)` — insert or update, evicting
+  least-recently-used entries if the cache is now over capacity
 - `get_or_insert_with(key, now_ms~, ttl_ms?, compute)` — memoize
+- `touch_ttl(key, now_ms~, ttl_ms?)` — refresh an entry's expiry in place
+  (sliding expiration) without needing its value
 - `contains(key, now_ms~)` — check presence without affecting recency
-- `remove(key)` / `clear()`
+- `remove(key)` / `clear()` / `retain(predicate)`
 - `purge_expired(now_ms~)` — proactively sweep expired entries
-- `size()` / `capacity()`
+- `keys()` / `values()` / `to_array(now_ms~)` — inspect current contents
+- `is_empty()` / `size()` / `capacity()` / `weight()` / `resize(capacity)`
 - `stats()` — hit/miss/eviction/expiration counters
 
 See `pkg.generated.mbti` for the full signature list.

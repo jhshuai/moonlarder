@@ -14,6 +14,8 @@ pub struct Larder[K, V] {
   table : Map[K, Slot[V]]
   mut capacity : Int
   default_ttl_ms : Int64?
+  weigher : (K, V) -> Int
+  mut current_weight : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int
@@ -26,7 +28,7 @@ pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
 pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool
 pub fn[K, V] Larder::keys(Self[K, V]) -> Iter[K]
-pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int) -> Self[K, V]
 pub fn[K : Hash + Eq, V] Larder::peek(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::purge_expired(Self[K, V], now_ms~ : Int64) -> Int
 pub fn[K : Hash + Eq, V] Larder::remove(Self[K, V], K) -> V?
@@ -38,10 +40,12 @@ pub fn[K, V] Larder::stats(Self[K, V]) -> Stats
 pub fn[K, V] Larder::to_array(Self[K, V], now_ms~ : Int64) -> Array[(K, V)]
 pub fn[K : Hash + Eq, V] Larder::touch_ttl(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64) -> Bool
 pub fn[K, V] Larder::values(Self[K, V]) -> Iter[V]
+pub fn[K, V] Larder::weight(Self[K, V]) -> Int
 
 pub struct Slot[V] {
   value : V
   expire_at : Int64?
+  weight : Int
 }
 
 pub(all) struct Stats {
