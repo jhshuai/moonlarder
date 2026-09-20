@@ -41,6 +41,12 @@ pub(all) struct Stats {
 } derive(Eq, Debug)
 
 ///|
+pub extend Stats with Eq::{not_equal, equal}
+
+///|
+pub extend Stats with @moonbitlang/core/debug.Debug::{to_repr}
+
+///|
 /// Creates an empty cache bounded by `capacity`.
 ///
 /// `default_ttl_ms`, when given, is the time-to-live applied to entries
@@ -320,6 +326,29 @@ pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(
   ttl_ms? : Int64,
   compute : () -> V,
 ) -> V {
+  match self.get(key, now_ms~) {
+    Some(value) => value
+    None => {
+      let value = compute()
+      self.set(key, value, now_ms~, ttl_ms?)
+      value
+    }
+  }
+}
+
+///|
+/// Like `get_or_insert_with`, but for a loader that can fail - a
+/// database lookup or a parse, say. On a miss or expiry, `compute`'s
+/// error propagates to the caller instead of being caught, and nothing
+/// is stored: a failed load doesn't wedge a bad value into the cache
+/// for the next caller to reuse.
+pub fn[K : Hash + Eq, V, E : Error] Larder::try_get_or_insert_with(
+  self : Larder[K, V],
+  key : K,
+  now_ms~ : Int64,
+  ttl_ms? : Int64,
+  compute : () -> V raise E,
+) -> V raise E {
   match self.get(key, now_ms~) {
     Some(value) => value
     None => {

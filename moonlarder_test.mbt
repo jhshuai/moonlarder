@@ -165,6 +165,64 @@ test "get_or_insert_with recomputes after the entry expires" {
 }
 
 ///|
+suberror LoadFailed {
+  Reason(String)
+}
+
+///|
+/// `try_get_or_insert_with`'s loader parameter must be typed to raise, so
+/// these two helpers exist even for the tests that only exercise the
+/// success path - a top-level function, unlike a test-local closure, can
+/// carry the pragma that says so deliberately.
+#warnings("-unused_error_type")
+fn succeed(value : Int) -> Int raise LoadFailed {
+  value
+}
+
+///|
+#warnings("-unused_error_type")
+fn succeed_and_count(calls : Array[Int], value : Int) -> Int raise LoadFailed {
+  calls[0] = calls[0] + 1
+  value
+}
+
+///|
+test "try_get_or_insert_with returns the loaded value on success" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  let value = c.try_get_or_insert_with("a", now_ms=0L, () => succeed(42))
+  assert_eq(value, 42)
+  assert_eq(c.get("a", now_ms=0L), Some(42))
+}
+
+///|
+test "try_get_or_insert_with propagates a loader's error and stores nothing" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  try {
+    let _ = c.try_get_or_insert_with("a", now_ms=0L, fn() -> Int raise LoadFailed {
+      raise Reason("boom")
+    })
+    fail("expected try_get_or_insert_with to propagate the loader's error")
+  } catch {
+    Reason(msg) => assert_eq(msg, "boom")
+    _ => fail("expected LoadFailed::Reason")
+  }
+  assert_false(c.contains("a", now_ms=0L))
+}
+
+///|
+test "try_get_or_insert_with does not call compute again on a hit" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  let calls = [0]
+  ignore(
+    c.try_get_or_insert_with("a", now_ms=0L, () => succeed_and_count(calls, 42)),
+  )
+  ignore(
+    c.try_get_or_insert_with("a", now_ms=1L, () => succeed_and_count(calls, 42)),
+  )
+  assert_eq(calls[0], 1)
+}
+
+///|
 test "peek reads a value without affecting recency or counters" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
   c.set("a", 1, now_ms=0L)
