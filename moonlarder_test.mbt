@@ -190,6 +190,29 @@ test "to_array snapshots non-expired entries in LRU order" {
 }
 
 ///|
+test "retain drops entries that fail the predicate and keeps the rest" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=4)
+  c.set("keep-a", 1, now_ms=0L)
+  c.set("drop-a", 2, now_ms=0L)
+  c.set("keep-b", 3, now_ms=0L)
+  c.set("drop-b", 4, now_ms=0L)
+  let removed = c.retain(fn(key, _value) { key.has_prefix("keep-") })
+  assert_eq(removed, 2)
+  assert_eq(c.size(), 2)
+  assert_eq(c.get("keep-a", now_ms=0L), Some(1))
+  assert_eq(c.get("keep-b", now_ms=0L), Some(3))
+  assert_eq(c.get("drop-a", now_ms=0L), None)
+}
+
+///|
+test "retain on a cache with nothing to drop removes zero entries" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L)
+  assert_eq(c.retain(fn(_key, _value) { true }), 0)
+  assert_eq(c.size(), 1)
+}
+
+///|
 test "capacity is reported back as given at construction" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=7)
   assert_eq(c.capacity(), 7)

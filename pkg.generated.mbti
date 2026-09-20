@@ -30,6 +30,7 @@ pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64) -
 pub fn[K : Hash + Eq, V] Larder::peek(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::purge_expired(Self[K, V], now_ms~ : Int64) -> Int
 pub fn[K : Hash + Eq, V] Larder::remove(Self[K, V], K) -> V?
+pub fn[K : Hash + Eq, V] Larder::retain(Self[K, V], (K, V) -> Bool) -> Int
 pub fn[K : Hash + Eq, V] Larder::set(Self[K, V], K, V, now_ms~ : Int64, ttl_ms? : Int64) -> Unit
 pub fn[K, V] Larder::size(Self[K, V]) -> Int
 pub fn[K, V] Larder::stats(Self[K, V]) -> Stats

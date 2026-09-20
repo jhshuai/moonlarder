@@ -277,6 +277,30 @@ pub fn[K, V] Larder::clear(self : Larder[K, V]) -> Unit {
 }
 
 ///|
+/// Removes every entry for which `predicate(key, value)` is `false`, and
+/// returns how many were removed.
+///
+/// Useful for bulk invalidation by pattern - e.g. dropping every cached
+/// entry under a prefix after the thing it was derived from changed -
+/// where doing it key by key via `remove` would mean collecting matching
+/// keys separately first.
+pub fn[K : Hash + Eq, V] Larder::retain(
+  self : Larder[K, V],
+  predicate : (K, V) -> Bool,
+) -> Int {
+  let dropped = []
+  for key, slot in self.table {
+    if !predicate(key, slot.value) {
+      dropped.push(key)
+    }
+  }
+  for key in dropped {
+    self.table.remove(key)
+  }
+  dropped.length()
+}
+
+///|
 /// Removes every currently-expired entry and returns how many were
 /// removed.
 ///
