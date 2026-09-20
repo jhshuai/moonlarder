@@ -36,6 +36,7 @@ pub fn[K : Hash + Eq, V] Larder::set(Self[K, V], K, V, now_ms~ : Int64, ttl_ms? 
 pub fn[K, V] Larder::size(Self[K, V]) -> Int
 pub fn[K, V] Larder::stats(Self[K, V]) -> Stats
 pub fn[K, V] Larder::to_array(Self[K, V], now_ms~ : Int64) -> Array[(K, V)]
+pub fn[K : Hash + Eq, V] Larder::touch_ttl(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64) -> Bool
 pub fn[K, V] Larder::values(Self[K, V]) -> Iter[V]
 
 pub struct Slot[V] {

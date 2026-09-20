@@ -229,6 +229,37 @@ pub fn[K : Hash + Eq, V] Larder::set(
 }
 
 ///|
+/// Refreshes `key`'s time-to-live without changing its value, moving it
+/// to the most-recently-used position. Returns `false` if `key` is
+/// absent or already expired - in which case an expired entry is
+/// dropped, the same as `get` would - and leaves the cache unchanged.
+///
+/// `ttl_ms`, when given, overrides `default_ttl_ms` for this refresh,
+/// the same as `set`'s `ttl_ms` argument does for a new value. This is
+/// the usual way to implement sliding expiration (e.g. a session that
+/// should stay alive as long as it's used) without having to read the
+/// value back just to write it again.
+pub fn[K : Hash + Eq, V] Larder::touch_ttl(
+  self : Larder[K, V],
+  key : K,
+  now_ms~ : Int64,
+  ttl_ms? : Int64,
+) -> Bool {
+  match self.table.get(key) {
+    None => false
+    Some(slot) =>
+      if slot.is_expired(now_ms) {
+        self.table.remove(key)
+        false
+      } else {
+        let expire_at = self.resolve_expiry(now_ms, ttl_ms)
+        self.touch(key, { value: slot.value, expire_at, })
+        true
+      }
+  }
+}
+
+///|
 /// Returns the cached value for `key`, computing and storing it via
 /// `compute` on a miss or expiry.
 ///

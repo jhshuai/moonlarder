@@ -68,6 +68,35 @@ test "a cache-wide default ttl applies when set doesn't override it" {
 }
 
 ///|
+test "touch_ttl extends an entry's deadline without changing its value" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L, ttl_ms=10L)
+  assert_true(c.touch_ttl("a", now_ms=5L, ttl_ms=10L)) // now expires at 15, not 10
+  assert_eq(c.get("a", now_ms=10L), Some(1))
+  assert_eq(c.get("a", now_ms=15L), None)
+}
+
+///|
+test "touch_ttl falls back to the cache-wide default ttl" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    default_ttl_ms=10L,
+  )
+  c.set("a", 1, now_ms=0L, ttl_ms=3L)
+  assert_true(c.touch_ttl("a", now_ms=1L)) // now uses the 10ms default, not 3ms
+  assert_eq(c.get("a", now_ms=3L), Some(1))
+}
+
+///|
+test "touch_ttl on a missing or already-expired key returns false" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  assert_false(c.touch_ttl("missing", now_ms=0L))
+  c.set("a", 1, now_ms=0L, ttl_ms=5L)
+  assert_false(c.touch_ttl("a", now_ms=5L))
+  assert_eq(c.size(), 0) // the expired entry was dropped, same as get() would
+}
+
+///|
 test "contains does not affect recency or counters" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=1)
   c.set("a", 1, now_ms=0L)
