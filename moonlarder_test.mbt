@@ -217,3 +217,30 @@ test "capacity is reported back as given at construction" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=7)
   assert_eq(c.capacity(), 7)
 }
+
+///|
+test "resize upward does not evict" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.resize(5)
+  assert_eq(c.capacity(), 5)
+  assert_eq(c.size(), 2)
+  assert_eq(c.stats().evictions, 0)
+}
+
+///|
+test "resize downward evicts the least-recently-used entries immediately" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=4)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L)
+  c.set("d", 4, now_ms=0L)
+  c.resize(2)
+  assert_eq(c.size(), 2)
+  assert_eq(c.stats().evictions, 2)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.get("d", now_ms=0L), Some(4))
+}

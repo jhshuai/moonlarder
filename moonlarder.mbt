@@ -8,7 +8,7 @@
 /// deterministic and testable regardless of target or wall-clock source.
 pub struct Larder[K, V] {
   table : Map[K, Slot[V]]
-  capacity : Int
+  mut capacity : Int
   default_ttl_ms : Int64?
   mut hit_count : Int
   mut miss_count : Int
@@ -336,6 +336,26 @@ pub fn[K, V] Larder::size(self : Larder[K, V]) -> Int {
 /// The maximum number of entries this cache holds before evicting.
 pub fn[K, V] Larder::capacity(self : Larder[K, V]) -> Int {
   self.capacity
+}
+
+///|
+/// Changes the maximum number of entries this cache holds.
+///
+/// Growing takes effect immediately with no other side effect. Shrinking
+/// below the current size evicts the least-recently-used entries right
+/// away, the same as `set` would have, rather than waiting for the next
+/// insert to notice the cache is over budget.
+pub fn[K : Hash + Eq, V] Larder::resize(
+  self : Larder[K, V],
+  new_capacity : Int,
+) -> Unit {
+  guard new_capacity > 0 else {
+    abort("Larder::resize: capacity must be positive, got \{new_capacity}")
+  }
+  self.capacity = new_capacity
+  while self.table.length() > self.capacity {
+    self.evict_oldest()
+  }
 }
 
 ///|
