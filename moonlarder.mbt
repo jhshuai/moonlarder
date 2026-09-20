@@ -188,6 +188,23 @@ pub fn[K, V] Larder::values(self : Larder[K, V]) -> Iter[V] {
 }
 
 ///|
+/// A snapshot of every non-expired entry, in least- to most-recently-used
+/// order. Unlike `keys`/`values`, this evaluates `now_ms` against every
+/// entry up front rather than leaving expired ones in the result.
+pub fn[K, V] Larder::to_array(
+  self : Larder[K, V],
+  now_ms~ : Int64,
+) -> Array[(K, V)] {
+  let out = []
+  for key, slot in self.table {
+    if !slot.is_expired(now_ms) {
+      out.push((key, slot.value))
+    }
+  }
+  out
+}
+
+///|
 /// Inserts or updates `key`, moving it to the most-recently-used position.
 ///
 /// `ttl_ms`, when given, overrides the cache's `default_ttl_ms` for this

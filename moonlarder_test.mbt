@@ -177,6 +177,19 @@ test "keys and values are ordered least- to most-recently-used" {
 }
 
 ///|
+test "to_array snapshots non-expired entries in LRU order" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=3)
+  c.set("a", 1, now_ms=0L, ttl_ms=5L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.to_array(now_ms=0L), [("a", 1), ("b", 2), ("c", 3)])
+  // "a" has expired by now_ms=10, and to_array leaves it out without
+  // removing it (unlike get/purge_expired, it doesn't mutate the cache).
+  assert_eq(c.to_array(now_ms=10L), [("b", 2), ("c", 3)])
+  assert_eq(c.size(), 3)
+}
+
+///|
 test "capacity is reported back as given at construction" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=7)
   assert_eq(c.capacity(), 7)
