@@ -58,10 +58,30 @@ let by_size : Larder[String, Bytes] = Larder::new(
 An entry whose own weight exceeds `capacity` is still admitted alone
 (evicting everything else) rather than rejected, since `set` never fails.
 
+By default a full cache evicts by least-recently-used (LRU). Pass
+`policy=Lfu` for least-frequently-used eviction instead - keeping
+entries that get reused often even if they haven't been touched
+*recently*, at the cost of a brand-new entry being evictable almost
+immediately if the cache is already full of entries used more than
+once (that's LFU's own definition at work, not a bug):
+
+```moonbit nocheck
+let cache : Larder[String, Int] = Larder::new(capacity=100, policy=Lfu)
+```
+
+`Larder` doesn't hand-roll a linked list or a heap for either policy;
+both are built on `moonbitlang/core`'s own `Map` (LRU reorders on
+access the same way a real linked-list-backed LRU would; LFU keeps a
+`Map[Int, Map[K, Unit]]` of frequency buckets, the same structure the
+classic O(1) LFU algorithm describes, just with `Map` standing in for
+the hand-rolled hash-set-plus-doubly-linked-list most implementations
+use).
+
 ## API
 
-- `Larder::new(capacity~, default_ttl_ms?, weigher?)` — create a cache
-- `Larder::from_array(entries, capacity~, default_ttl_ms?, weigher?, now_ms~)`
+- `Larder::new(capacity~, default_ttl_ms?, weigher?, policy?)` — create a
+  cache
+- `Larder::from_array(entries, capacity~, default_ttl_ms?, weigher?, policy?, now_ms~)`
   — build a cache from an array in one call, as if `set` had been called
   for each entry in order
 - `get(key, now_ms~)` — look up a value, refreshing its recency on a hit
@@ -80,6 +100,7 @@ An entry whose own weight exceeds `capacity` is still admitted alone
 - `iter()` / `iter2()` — support `for entry in larder { .. }` and
   `for key, value in larder { .. }` directly
 - `is_empty()` / `size()` / `capacity()` / `weight()` / `resize(capacity)`
+- `policy()` — the eviction policy this cache was created with
 - `stats()` — hit/miss/eviction/expiration counters
 
 See `pkg.generated.mbti` for the full signature list.

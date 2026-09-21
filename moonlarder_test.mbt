@@ -402,18 +402,18 @@ test "resize honors a weigher's budget, not entry count" {
 }
 
 ///|
-test "Show for Larder summarizes size, capacity, and weight" {
+test "Show for Larder summarizes size, capacity, weight, and policy" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=10)
   c.set("a", 1, now_ms=0L)
   c.set("b", 2, now_ms=0L)
-  assert_eq(c.to_string(), "Larder(size=2, capacity=10, weight=2)")
+  assert_eq(c.to_string(), "Larder(size=2, capacity=10, weight=2, policy=lru)")
 }
 
 ///|
 test "Debug for Larder matches its Show output" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=10)
   c.set("a", 1, now_ms=0L)
-  debug_inspect(c, content="Larder(size=1, capacity=10, weight=1)")
+  debug_inspect(c, content="Larder(size=1, capacity=10, weight=1, policy=lru)")
 }
 
 ///|
@@ -501,4 +501,208 @@ test "iter2/iter reflect eviction and recency the same as keys/values" {
   ignore(c.get("a", now_ms=0L)) // "a" becomes most-recently-used
   c.set("c", 3, now_ms=0L) // "b" is evicted, not "a"
   assert_eq(c.iter().to_array(), [("a", 1), ("c", 3)])
+}
+
+///|
+test "policy reports back what new was given" {
+  let lru : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+  )
+  let lfu : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=Lfu,
+  )
+  assert_eq(lru.policy(), Lru)
+  assert_eq(lfu.policy(), Lfu)
+}
+
+///|
+test "Lfu policy evicts the least-frequently-used entry, not the least-recently-used" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  ignore(c.get("a", now_ms=0L))
+  ignore(c.get("a", now_ms=0L)) // "a" now used 3 times total, "b" only once
+  c.set("c", 3, now_ms=0L) // "b" is the least-frequently-used, so it goes
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "Lfu breaks frequency ties by evicting the least-recently-touched" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L) // both at frequency 1; "a" is the older of the two
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "Lfu can evict a just-inserted entry immediately if others are used more - by design, not a bug" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  ignore(c.get("a", now_ms=0L)) // frequency 2
+  c.set("b", 2, now_ms=0L) // frequency 1 - the new minimum, even though it's brand new
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), None)
+}
+
+///|
+test "set on an existing key bumps its frequency under Lfu, same as get" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("a", 10, now_ms=0L) // re-setting "a" counts as a use
+  c.set("c", 3, now_ms=0L) // "b" (frequency 1) goes, not "a" (frequency 2)
+  assert_eq(c.get("a", now_ms=0L), Some(10))
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "touch_ttl bumps frequency under Lfu the same as a hit would" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  assert_true(c.touch_ttl("a", now_ms=0L))
+  c.set("c", 3, now_ms=0L) // "b" (frequency 1) goes, not "a" (frequency 2)
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), None)
+}
+
+///|
+test "peek and contains do not affect frequency under Lfu" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  ignore(c.peek("a", now_ms=0L))
+  ignore(c.contains("a", now_ms=0L))
+  // both still at frequency 1; "a" is the older of the two
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+}
+
+///|
+test "remove cleans up Lfu frequency bookkeeping" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  ignore(c.get("a", now_ms=0L)) // frequency 2
+  assert_eq(c.remove("a"), Some(1))
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L) // two fresh entries, well within capacity
+  assert_eq(c.size(), 2)
+  assert_eq(c.stats().evictions, 0)
+}
+
+///|
+test "clear resets Lfu frequency bookkeeping" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  ignore(c.get("a", now_ms=0L))
+  ignore(c.get("a", now_ms=0L)) // frequency 3
+  c.clear()
+  c.set("b", 2, now_ms=0L)
+  // if min_freq were still stuck at 3 from before clear, this eviction
+  // would never find "b"'s bucket (frequency 1) and would misbehave
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "retain cleans up Lfu frequency bookkeeping for dropped entries" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=Lfu,
+  )
+  c.set("keep", 1, now_ms=0L)
+  c.set("drop", 2, now_ms=0L)
+  ignore(c.get("drop", now_ms=0L)) // frequency 2
+  assert_eq(c.retain(fn(key, _value) { key == "keep" }), 1)
+  c.set("x", 10, now_ms=0L)
+  c.set("y", 20, now_ms=0L) // "keep", "x", "y" together are exactly at capacity
+  assert_eq(c.size(), 3)
+  assert_eq(c.stats().evictions, 0)
+}
+
+///|
+test "purge_expired cleans up Lfu frequency bookkeeping" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L, ttl_ms=5L)
+  ignore(c.get("a", now_ms=0L)) // frequency 2
+  assert_eq(c.purge_expired(now_ms=10L), 1)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L) // exactly at capacity, no eviction expected
+  assert_eq(c.size(), 2)
+  assert_eq(c.stats().evictions, 0)
+}
+
+///|
+test "Lfu policy composes with a weigher" {
+  let c : @moonlarder.Larder[String, String] = @moonlarder.Larder::new(
+    capacity=10,
+    policy=Lfu,
+    weigher=fn(_key, value : String) { value.length() },
+  )
+  c.set("a", "12345", now_ms=0L) // weight 5, frequency 1
+  c.set("b", "12345", now_ms=0L) // weight 5, frequency 1; total weight 10
+  ignore(c.get("a", now_ms=0L)) // "a" -> frequency 2
+  c.set("c", "1234", now_ms=0L) // weight 4; total would be 14 > 10
+  assert_eq(c.get("a", now_ms=0L), Some("12345"))
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("c", now_ms=0L), Some("1234"))
+}
+
+///|
+test "Lfu eviction advances past a stale min_freq left by an explicit remove" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L) // frequency 1
+  c.set("b", 2, now_ms=0L) // frequency 1
+  c.set("d", 4, now_ms=0L) // frequency 1
+  ignore(c.get("b", now_ms=0L)) // "b" -> frequency 2
+  ignore(c.get("d", now_ms=0L)) // "d" -> frequency 2
+  // frequency 1 now holds only "a"; frequency 2 holds "b" then "d"
+  assert_eq(c.remove("a"), Some(1))
+  // no insert happens between the remove above and the resize below, so
+  // whatever tracks "the minimum frequency" is not refreshed by the usual
+  // reset-on-insert shortcut and must be corrected during eviction itself
+  c.resize(1)
+  assert_eq(c.size(), 1)
+  assert_eq(c.stats().evictions, 1)
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("d", now_ms=0L), Some(4))
 }

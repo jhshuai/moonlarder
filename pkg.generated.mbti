@@ -10,12 +10,23 @@ import {
 // Errors
 
 // Types and methods
+pub(all) enum EvictionPolicy {
+  Lru
+  Lfu
+} derive(Eq, @debug.Debug)
+pub fn EvictionPolicy::equal(Self, Self) -> Bool
+pub fn EvictionPolicy::not_equal(Self, Self) -> Bool
+pub fn EvictionPolicy::to_repr(Self) -> @debug.Repr
+
 pub struct Larder[K, V] {
   table : Map[K, Slot[V]]
+  policy : EvictionPolicy
   mut capacity : Int
   default_ttl_ms : Int64?
   weigher : (K, V) -> Int
   mut current_weight : Int
+  freq_buckets : Map[Int, Map[K, Unit]]
+  mut min_freq : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int
@@ -24,16 +35,17 @@ pub struct Larder[K, V] {
 pub fn[K, V] Larder::capacity(Self[K, V]) -> Int
 pub fn[K, V] Larder::clear(Self[K, V]) -> Unit
 pub fn[K : Hash + Eq, V] Larder::contains(Self[K, V], K, now_ms~ : Int64) -> Bool
-pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, now_ms~ : Int64) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, now_ms~ : Int64) -> Self[K, V]
 pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
 pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool
 pub fn[K, V] Larder::iter(Self[K, V]) -> Iter[(K, V)]
 pub fn[K, V] Larder::iter2(Self[K, V]) -> Iter2[K, V]
 pub fn[K, V] Larder::keys(Self[K, V]) -> Iter[K]
-pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy) -> Self[K, V]
 pub fn[K, V] Larder::output(Self[K, V], &Logger) -> Unit
 pub fn[K : Hash + Eq, V] Larder::peek(Self[K, V], K, now_ms~ : Int64) -> V?
+pub fn[K, V] Larder::policy(Self[K, V]) -> EvictionPolicy
 pub fn[K : Hash + Eq, V] Larder::purge_expired(Self[K, V], now_ms~ : Int64) -> Int
 pub fn[K : Hash + Eq, V] Larder::remove(Self[K, V], K) -> V?
 pub fn[K : Hash + Eq, V] Larder::resize(Self[K, V], Int) -> Unit
@@ -55,6 +67,7 @@ pub struct Slot[V] {
   value : V
   expire_at : Int64?
   weight : Int
+  freq : Int
 }
 
 pub(all) struct Stats {

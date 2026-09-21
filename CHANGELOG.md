@@ -6,6 +6,33 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.3.0]
+
+### Added
+
+- `Show`/`Debug` for `Larder`, printing a structural summary
+  (`Larder(size=.., capacity=.., weight=.., policy=..)`) rather than
+  dumping every entry.
+- `Larder::from_array(entries, capacity~, ..., now_ms~)` — build a
+  cache from an array in one call, as if `set` had been called for
+  each entry in order; the usual reason is rehydrating from persisted
+  state.
+- `iter()`/`iter2()` — `for entry in larder { .. }` and
+  `for key, value in larder { .. }` work directly, without going
+  through `to_array`/`keys`/`values` first.
+- A second eviction policy: `Larder::new`'s new `policy?` parameter
+  accepts `Lfu` (least-frequently-used) as an alternative to the
+  default `Lru`. Built the same way LRU is - reusing
+  `moonbitlang/core`'s `Map` rather than a hand-rolled structure, here
+  as a `Map[Int, Map[K, Unit]]` of frequency buckets implementing the
+  classic O(1)-amortized LFU algorithm - and threaded through every
+  operation that removes or touches an entry (`get`, `set`,
+  `touch_ttl`, `remove`, `retain`, `clear`, `purge_expired`,
+  `resize`). `keys()`/`values()`/`iter()`/`iter2()`/`to_array()`
+  reflect plain insertion order under `Lfu`, not an eviction-meaningful
+  order the way they do under `Lru`.
+- `policy()` — the eviction policy a cache was created with.
+
 ## [0.2.0]
 
 ### Added
