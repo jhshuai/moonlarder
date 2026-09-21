@@ -49,7 +49,6 @@ values can't crowd out many small ones the way plain entry-counting
 would let them:
 
 ```moonbit nocheck
-///|
 let by_size : Larder[String, Bytes] = Larder::new(
   capacity=10 * 1024 * 1024, // 10 MiB total, not 10 MiB per entry
   weigher=fn(_key, value) { value.length() },
