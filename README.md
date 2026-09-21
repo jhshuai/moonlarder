@@ -77,6 +77,8 @@ An entry whose own weight exceeds `capacity` is still admitted alone
 - `remove(key)` / `clear()` / `retain(predicate)`
 - `purge_expired(now_ms~)` — proactively sweep expired entries
 - `keys()` / `values()` / `to_array(now_ms~)` — inspect current contents
+- `iter()` / `iter2()` — support `for entry in larder { .. }` and
+  `for key, value in larder { .. }` directly
 - `is_empty()` / `size()` / `capacity()` / `weight()` / `resize(capacity)`
 - `stats()` — hit/miss/eviction/expiration counters
 

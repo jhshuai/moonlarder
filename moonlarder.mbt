@@ -286,6 +286,26 @@ pub fn[K, V] Larder::values(self : Larder[K, V]) -> Iter[V] {
 }
 
 ///|
+/// Supports `for (key, value) in larder { .. }`. Same order and the same
+/// inclusion of not-yet-purged expired entries as `keys`/`values`.
+pub fn[K, V] Larder::iter(self : Larder[K, V]) -> Iter[(K, V)] {
+  self.table.iter().map(fn(entry) { (entry.0, entry.1.value) })
+}
+
+///|
+/// Supports `for key, value in larder { .. }` - the two-variable form of
+/// the same iteration `iter` provides.
+pub fn[K, V] Larder::iter2(self : Larder[K, V]) -> Iter2[K, V] {
+  let inner = self.table.iter()
+  Iter2::new(fn() {
+    match inner.next() {
+      Some((key, slot)) => Some((key, slot.value))
+      None => None
+    }
+  })
+}
+
+///|
 /// A snapshot of every non-expired entry, in least- to most-recently-used
 /// order. Unlike `keys`/`values`, this evaluates `now_ms` against every
 /// entry up front rather than leaving expired ones in the result.

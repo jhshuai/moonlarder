@@ -467,3 +467,38 @@ test "from_array on an empty array yields an empty cache" {
   )
   assert_true(c.is_empty())
 }
+
+///|
+test "for key, value in larder iterates least- to most-recently-used" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=3)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L)
+  let seen = []
+  for key, value in c {
+    seen.push((key, value))
+  }
+  assert_eq(seen, [("a", 1), ("b", 2), ("c", 3)])
+}
+
+///|
+test "for (key, value) in larder is the one-variable form of the same iteration" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=3)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  let seen = []
+  for entry in c {
+    seen.push(entry)
+  }
+  assert_eq(seen, [("a", 1), ("b", 2)])
+}
+
+///|
+test "iter2/iter reflect eviction and recency the same as keys/values" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  ignore(c.get("a", now_ms=0L)) // "a" becomes most-recently-used
+  c.set("c", 3, now_ms=0L) // "b" is evicted, not "a"
+  assert_eq(c.iter().to_array(), [("a", 1), ("c", 3)])
+}

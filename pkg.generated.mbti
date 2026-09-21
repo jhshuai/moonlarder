@@ -28,6 +28,8 @@ pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, defa
 pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
 pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool
+pub fn[K, V] Larder::iter(Self[K, V]) -> Iter[(K, V)]
+pub fn[K, V] Larder::iter2(Self[K, V]) -> Iter2[K, V]
 pub fn[K, V] Larder::keys(Self[K, V]) -> Iter[K]
 pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int) -> Self[K, V]
 pub fn[K, V] Larder::output(Self[K, V], &Logger) -> Unit
