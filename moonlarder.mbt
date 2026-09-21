@@ -47,6 +47,30 @@ pub extend Stats with Eq::{not_equal, equal}
 pub extend Stats with @moonbitlang/core/debug.Debug::{to_repr}
 
 ///|
+/// Prints as `Larder(size=.., capacity=.., weight=..)` - a structural
+/// summary, not a dump of every key and value. Larger caches make a full
+/// dump impractical to read, and a cache's entries may not even be worth
+/// printing (nothing here requires `K`/`V` to implement `Show`).
+pub impl[K, V] Show for Larder[K, V] with fn output(self, logger) {
+  logger.write_string(
+    "Larder(size=\{self.table.length()}, capacity=\{self.capacity}, weight=\{self.current_weight})",
+  )
+}
+
+///|
+pub impl[K, V] @moonbitlang/core/debug.Debug for Larder[K, V] with fn to_repr(
+  self,
+) {
+  @moonbitlang/core/debug.Repr::literal(self.to_string())
+}
+
+///|
+pub extend Larder with Show::{to_string, output}
+
+///|
+pub extend Larder with @moonbitlang/core/debug.Debug::{to_repr}
+
+///|
 /// Creates an empty cache bounded by `capacity`.
 ///
 /// `default_ttl_ms`, when given, is the time-to-live applied to entries

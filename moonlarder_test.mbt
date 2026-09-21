@@ -400,3 +400,18 @@ test "resize honors a weigher's budget, not entry count" {
   assert_eq(c.get("a", now_ms=0L), None)
   assert_eq(c.get("b", now_ms=0L), Some("12345"))
 }
+
+///|
+test "Show for Larder summarizes size, capacity, and weight" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=10)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  assert_eq(c.to_string(), "Larder(size=2, capacity=10, weight=2)")
+}
+
+///|
+test "Debug for Larder matches its Show output" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=10)
+  c.set("a", 1, now_ms=0L)
+  debug_inspect(c, content="Larder(size=1, capacity=10, weight=1)")
+}
