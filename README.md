@@ -61,6 +61,9 @@ An entry whose own weight exceeds `capacity` is still admitted alone
 ## API
 
 - `Larder::new(capacity~, default_ttl_ms?, weigher?)` — create a cache
+- `Larder::from_array(entries, capacity~, default_ttl_ms?, weigher?, now_ms~)`
+  — build a cache from an array in one call, as if `set` had been called
+  for each entry in order
 - `get(key, now_ms~)` — look up a value, refreshing its recency on a hit
 - `peek(key, now_ms~)` — read a value without affecting recency or stats
 - `set(key, value, now_ms~, ttl_ms?)` — insert or update, evicting

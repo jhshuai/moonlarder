@@ -415,3 +415,55 @@ test "Debug for Larder matches its Show output" {
   c.set("a", 1, now_ms=0L)
   debug_inspect(c, content="Larder(size=1, capacity=10, weight=1)")
 }
+
+///|
+test "from_array loads entries in order, oldest to most-recently-used" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::from_array(
+    [("a", 1), ("b", 2), ("c", 3)],
+    capacity=3,
+    now_ms=0L,
+  )
+  assert_eq(c.size(), 3)
+  assert_eq(c.keys().to_array(), ["a", "b", "c"])
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "from_array evicts the same way a loop of set calls would" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::from_array(
+    [("a", 1), ("b", 2), ("c", 3)],
+    capacity=2,
+    now_ms=0L,
+  )
+  assert_eq(c.size(), 2)
+  assert_eq(c.stats().evictions, 1)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "from_array honors default_ttl_ms and a weigher like new does" {
+  let c : @moonlarder.Larder[String, String] = @moonlarder.Larder::from_array(
+    [("a", "12345"), ("b", "123")],
+    capacity=10,
+    default_ttl_ms=5L,
+    weigher=fn(_key, value : String) { value.length() },
+    now_ms=0L,
+  )
+  assert_eq(c.weight(), 8) // 5 + 3, not 2 entries
+  assert_eq(c.get("a", now_ms=4L), Some("12345"))
+  assert_eq(c.get("a", now_ms=5L), None) // expired via the default ttl
+}
+
+///|
+test "from_array on an empty array yields an empty cache" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::from_array(
+    [],
+    capacity=3,
+    now_ms=0L,
+  )
+  assert_true(c.is_empty())
+}

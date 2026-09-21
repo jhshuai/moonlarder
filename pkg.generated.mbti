@@ -24,6 +24,7 @@ pub struct Larder[K, V] {
 pub fn[K, V] Larder::capacity(Self[K, V]) -> Int
 pub fn[K, V] Larder::clear(Self[K, V]) -> Unit
 pub fn[K : Hash + Eq, V] Larder::contains(Self[K, V], K, now_ms~ : Int64) -> Bool
+pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, now_ms~ : Int64) -> Self[K, V]
 pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
 pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool

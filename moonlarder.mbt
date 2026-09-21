@@ -108,6 +108,30 @@ pub fn[K : Hash + Eq, V] Larder::new(
 }
 
 ///|
+/// Builds a cache from `entries` in one call, as if `set` had been
+/// called for each in order - so later entries end up more
+/// recently-used than earlier ones, and capacity/weight limits are
+/// enforced the same way, possibly evicting some of `entries` itself if
+/// they don't all fit.
+///
+/// The usual reason to reach for this instead of a loop of `set` calls
+/// is rehydrating a cache from persisted state (a snapshot written by
+/// `to_array`, say) in one expression rather than several statements.
+pub fn[K : Hash + Eq, V] Larder::from_array(
+  entries : Array[(K, V)],
+  capacity~ : Int,
+  default_ttl_ms? : Int64,
+  weigher? : (K, V) -> Int,
+  now_ms~ : Int64,
+) -> Larder[K, V] {
+  let cache = Larder::new(capacity~, default_ttl_ms?, weigher?)
+  for entry in entries {
+    cache.set(entry.0, entry.1, now_ms~)
+  }
+  cache
+}
+
+///|
 fn[V] Slot::is_expired(self : Slot[V], now_ms : Int64) -> Bool {
   match self.expire_at {
     None => false
