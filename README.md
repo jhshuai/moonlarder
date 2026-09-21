@@ -105,6 +105,18 @@ use).
 
 See `pkg.generated.mbti` for the full signature list.
 
+## Testing
+
+Beyond the hand-picked unit tests in `moonlarder_test.mbt`,
+`moonlarder_qc_test.mbt` uses [`moonbitlang/quickcheck`](https://mooncakes.io/docs/moonbitlang/quickcheck)
+to replay randomly generated sequences of operations and check
+invariants that must hold no matter what produced the current state -
+most notably, that the real `Map`-based LRU and LFU implementations
+agree with independent, deliberately naive reference models (plain
+arrays and linear scans, no shared code with the real implementation)
+on every hit/miss and on the final set of surviving keys, across 100
+random sequences each run.
+
 ## Benchmarks
 
 ```

@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.4.0]
+
+### Added
+
+- Property-based tests (`moonlarder_qc_test.mbt`, via
+  `moonbitlang/quickcheck`) that replay randomly generated operation
+  sequences and check invariants: the real LRU and LFU implementations
+  agree with independent naive reference models on every hit/miss and
+  on the final surviving key set, `weight()` never exceeds `capacity()`
+  except by a single oversized entry, and `to_array`'s report always
+  agrees with `peek`.
+
 ## [0.3.0]
 
 ### Added
