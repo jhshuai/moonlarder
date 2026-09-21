@@ -32,5 +32,6 @@ jobs:
       - run: moon test --target wasm-gc
       - run: moon test --target wasm
       - run: moon test --target js
+      - run: moon run cmd/main --target wasm-gc
       - run: moon fmt --check
       - run: moon info --target all

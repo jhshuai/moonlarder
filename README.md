@@ -10,6 +10,20 @@ structure.
 moon add jhshuai/moonlarder
 ```
 
+## Try it
+
+```
+moon run cmd/main --target wasm-gc
+```
+
+`cmd/main` is a runnable tour of LRU eviction, TTL expiry, memoization,
+weighted capacity, the LFU policy, and JSON snapshotting - each step
+prints what it did and why. It uses an explicit `now_ms` throughout
+rather than a real clock (the same as everything else in this
+library), so its output is identical on every target: swap `wasm-gc`
+for `wasm`, `js`, or `native` (the last needs a C compiler on `PATH`,
+same as `moon test` does) and nothing about the demo itself changes.
+
 ## Why
 
 A cache that only evicts by size (plain LRU) can't drop stale entries on

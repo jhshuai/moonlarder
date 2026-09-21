@@ -1,0 +1,7 @@
+import {
+  "jhshuai/moonlarder",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+}
+
+pkgtype(kind: "executable")

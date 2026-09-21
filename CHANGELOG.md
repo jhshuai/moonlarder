@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.6.0]
+
+### Added
+
+- `cmd/main`, a runnable tour (`moon run cmd/main --target wasm-gc`) of
+  LRU eviction, TTL expiry, memoization, weighted capacity, the LFU
+  policy, and JSON snapshotting. Uses an explicit `now_ms` throughout,
+  so its output is identical on every target. Now part of CI.
+
 ## [0.5.0]
 
 ### Added
