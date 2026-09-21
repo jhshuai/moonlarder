@@ -6,6 +6,20 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.5.0]
+
+### Added
+
+- `ToJson`/`FromJson` for `Larder[K, V]` (when `K`/`V` implement them):
+  `{"capacity": .., "policy": "lru"|"lfu", "entries": [{"key": ..,
+  "value": ..}, ..]}`. A snapshot of contents, not a byte-for-byte save
+  state - LRU recency, LFU frequencies, and TTLs don't round-trip, and
+  `FromJson` always reconstructs with the default (count-based)
+  weigher, since a weigher is a function with nothing in JSON to
+  deserialize it from. Covered by a new property test asserting a JSON
+  round trip preserves every live entry, on top of the hand-picked
+  cases in `moonlarder_test.mbt`.
+
 ## [0.4.0]
 
 ### Added

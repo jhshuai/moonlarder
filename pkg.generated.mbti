@@ -3,6 +3,7 @@ package "jhshuai/moonlarder"
 
 import {
   "moonbitlang/core/debug",
+  "moonbitlang/core/json",
 }
 
 // Values
@@ -36,6 +37,7 @@ pub fn[K, V] Larder::capacity(Self[K, V]) -> Int
 pub fn[K, V] Larder::clear(Self[K, V]) -> Unit
 pub fn[K : Hash + Eq, V] Larder::contains(Self[K, V], K, now_ms~ : Int64) -> Bool
 pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, now_ms~ : Int64) -> Self[K, V]
+pub fn[K : Hash + Eq + @json.FromJson, V : @json.FromJson] Larder::from_json(Json, @json.JsonPath) -> Self[K, V] raise @json.JsonDecodeError
 pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
 pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool
@@ -54,6 +56,7 @@ pub fn[K : Hash + Eq, V] Larder::set(Self[K, V], K, V, now_ms~ : Int64, ttl_ms? 
 pub fn[K, V] Larder::size(Self[K, V]) -> Int
 pub fn[K, V] Larder::stats(Self[K, V]) -> Stats
 pub fn[K, V] Larder::to_array(Self[K, V], now_ms~ : Int64) -> Array[(K, V)]
+pub fn[K : ToJson, V : ToJson] Larder::to_json(Self[K, V]) -> Json
 pub fn[K, V] Larder::to_repr(Self[K, V]) -> @debug.Repr
 pub fn[K, V] Larder::to_string(Self[K, V]) -> String
 pub fn[K : Hash + Eq, V] Larder::touch_ttl(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64) -> Bool
@@ -61,7 +64,9 @@ pub fn[K : Hash + Eq, V, E : Error] Larder::try_get_or_insert_with(Self[K, V], K
 pub fn[K, V] Larder::values(Self[K, V]) -> Iter[V]
 pub fn[K, V] Larder::weight(Self[K, V]) -> Int
 pub impl[K, V] Show for Larder[K, V]
+pub impl[K : ToJson, V : ToJson] ToJson for Larder[K, V]
 pub impl[K, V] @debug.Debug for Larder[K, V]
+pub impl[K : Hash + Eq + @json.FromJson, V : @json.FromJson] @json.FromJson for Larder[K, V]
 
 pub struct Slot[V] {
   value : V

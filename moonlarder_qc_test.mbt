@@ -261,6 +261,48 @@ fn prop_to_array_agrees_with_peek(ops : Array[(Int, Int, Int)]) -> Bool {
 }
 
 ///|
+/// `from_json(to_json(cache))` must be indistinguishable from `cache`
+/// itself for every non-expired entry present at the moment of the
+/// snapshot - not bit-for-bit identical (LRU recency order, LFU
+/// frequencies, and TTLs are all deliberately not part of the JSON
+/// shape), just the same set of keys mapping to the same values.
+fn prop_json_round_trip_preserves_contents(
+  ops : Array[(Int, Int, Int)],
+) -> Bool {
+  let capacity = 5
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(capacity~)
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 3 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      _ => ignore(cache.remove(key))
+    }
+  }
+  try {
+    let restored : @moonlarder.Larder[Int, Int] = @json.from_json(
+      ToJson::to_json(cache),
+    )
+    if restored.size() != cache.size() {
+      false
+    } else {
+      let mut ok = true
+      for entry in cache.to_array(now_ms=0L) {
+        if restored.peek(entry.0, now_ms=0L) != Some(entry.1) {
+          ok = false
+        }
+      }
+      ok
+    }
+  } catch {
+    // A snapshot this test just produced itself failing to parse back
+    // would be a real bug, not something to silently ignore.
+    _ => false
+  }
+}
+
+///|
 test "property: LRU matches an independent naive reference model" {
   @quickcheck.quick_check_fn(prop_lru_matches_naive_model)
 }
@@ -278,4 +320,9 @@ test "property: capacity is never exceeded except by a single oversized entry" {
 ///|
 test "property: to_array's report always agrees with peek" {
   @quickcheck.quick_check_fn(prop_to_array_agrees_with_peek)
+}
+
+///|
+test "property: a JSON round trip preserves every live entry" {
+  @quickcheck.quick_check_fn(prop_json_round_trip_preserves_contents)
 }

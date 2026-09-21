@@ -706,3 +706,96 @@ test "Lfu eviction advances past a stale min_freq left by an explicit remove" {
   assert_eq(c.get("b", now_ms=0L), None)
   assert_eq(c.get("d", now_ms=0L), Some(4))
 }
+
+///|
+test "to_json produces the documented shape" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=10,
+    policy=Lfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  assert_eq(
+    ToJson::to_json(c),
+    Json::object({
+      "capacity": Json::number(10),
+      "policy": Json::string("lfu"),
+      "entries": Json::array([
+        Json::object({ "key": Json::string("a"), "value": Json::number(1) }),
+        Json::object({ "key": Json::string("b"), "value": Json::number(2) }),
+      ]),
+    }),
+  )
+}
+
+///|
+test "from_json inverts to_json for capacity, policy, and entries" {
+  let original : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=10,
+    policy=Lfu,
+  )
+  original.set("a", 1, now_ms=0L)
+  original.set("b", 2, now_ms=0L)
+  let restored : @moonlarder.Larder[String, Int] = @json.from_json(
+    ToJson::to_json(original),
+  )
+  assert_eq(restored.capacity(), 10)
+  assert_eq(restored.policy(), Lfu)
+  assert_eq(restored.get("a", now_ms=0L), Some(1))
+  assert_eq(restored.get("b", now_ms=0L), Some(2))
+}
+
+///|
+test "from_json evicts on reload the same way from_array would" {
+  let json : Json = Json::object({
+    "capacity": Json::number(2),
+    "policy": Json::string("lru"),
+    "entries": Json::array([
+      Json::object({ "key": Json::string("a"), "value": Json::number(1) }),
+      Json::object({ "key": Json::string("b"), "value": Json::number(2) }),
+      Json::object({ "key": Json::string("c"), "value": Json::number(3) }),
+    ]),
+  })
+  let restored : @moonlarder.Larder[String, Int] = @json.from_json(json)
+  assert_eq(restored.size(), 2)
+  assert_eq(restored.get("a", now_ms=0L), None)
+  assert_eq(restored.get("b", now_ms=0L), Some(2))
+  assert_eq(restored.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "from_json reloaded entries never expire on their own" {
+  let json : Json = Json::object({
+    "capacity": Json::number(2),
+    "policy": Json::string("lru"),
+    "entries": Json::array([
+      Json::object({ "key": Json::string("a"), "value": Json::number(1) }),
+    ]),
+  })
+  let restored : @moonlarder.Larder[String, Int] = @json.from_json(json)
+  assert_eq(restored.get("a", now_ms=1_000_000_000L), Some(1))
+}
+
+///|
+test "from_json rejects malformed input" {
+  try {
+    let _ : @moonlarder.Larder[String, Int] = @json.from_json(
+      Json::object({ "capacity": Json::number(2) }),
+    )
+    fail("expected from_json to reject a missing \"policy\" field")
+  } catch {
+    _ => ()
+  }
+  try {
+    let _ : @moonlarder.Larder[String, Int] = @json.from_json(
+      Json::object({
+        "capacity": Json::number(2),
+        "policy": Json::string("not-a-policy"),
+        "entries": Json::array([]),
+      }),
+    )
+    fail("expected from_json to reject an unknown policy string")
+  } catch {
+    _ => ()
+  }
+}

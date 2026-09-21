@@ -77,6 +77,23 @@ classic O(1) LFU algorithm describes, just with `Map` standing in for
 the hand-rolled hash-set-plus-doubly-linked-list most implementations
 use).
 
+`Larder[K, V]` implements `ToJson`/`FromJson` when `K`/`V` do, for
+persisting and rehydrating a cache across a restart:
+
+```moonbit nocheck
+let snapshot : Json = ToJson::to_json(cache)
+let restored : Larder[String, Int] = @json.from_json(snapshot)
+```
+
+The snapshot is `{"capacity": .., "policy": "lru"|"lfu", "entries":
+[{"key": .., "value": ..}, ..]}`. It's a snapshot of *contents*, not a
+byte-for-byte save state: LRU recency order, LFU frequencies, and TTLs
+don't survive the round trip (a reloaded entry never expires on its
+own, and `FromJson` always uses the default count-based weigher, since
+a weigher is a function and there's nothing in JSON to deserialize it
+from). Use `to_array`/`from_array` directly, supplying your own
+`weigher`/`default_ttl_ms`, if you need either preserved.
+
 ## API
 
 - `Larder::new(capacity~, default_ttl_ms?, weigher?, policy?)` — create a
@@ -102,6 +119,7 @@ use).
 - `is_empty()` / `size()` / `capacity()` / `weight()` / `resize(capacity)`
 - `policy()` — the eviction policy this cache was created with
 - `stats()` — hit/miss/eviction/expiration counters
+- `ToJson`/`FromJson` — snapshot to and rehydrate from JSON (see above)
 
 See `pkg.generated.mbti` for the full signature list.
 

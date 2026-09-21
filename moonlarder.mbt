@@ -503,6 +503,112 @@ pub fn[K, V] Larder::to_array(
 }
 
 ///|
+/// `{"capacity": .., "policy": "lru"|"lfu", "entries": [{"key": ..,
+/// "value": ..}, ..]}`. Includes every stored entry, expired or not -
+/// the same contract as `keys`/`values`, since `ToJson`'s signature
+/// takes no clock to compare deadlines against. Call `purge_expired`
+/// first if that matters.
+///
+/// See `FromJson`'s doc comment for what does and doesn't round-trip.
+pub impl[K : ToJson, V : ToJson] ToJson for Larder[K, V] with fn to_json(self) {
+  let policy = match self.policy {
+    Lru => "lru"
+    Lfu => "lfu"
+  }
+  let entries = []
+  for key, slot in self.table {
+    entries.push(
+      Json::object({
+        "key": ToJson::to_json(key),
+        "value": ToJson::to_json(slot.value),
+      }),
+    )
+  }
+  Json::object({
+    "capacity": Json::number(self.capacity.to_double()),
+    "policy": Json::string(policy),
+    "entries": Json::array(entries),
+  })
+}
+
+///|
+/// Reconstructs a `Larder` from a snapshot written by `ToJson`, with
+/// capacity and policy taken from the JSON and entries re-inserted in
+/// the order they were written - the same eviction rules `from_array`
+/// follows if they don't all fit.
+///
+/// Always uses the default (count-based) weigher and no default TTL:
+/// a weigher is a function, so there is nothing in JSON to deserialize
+/// it from, and remaining TTL is deliberately not round-tripped at all
+/// - a reloaded entry never expires on its own, rather than guessing
+/// what "remaining" should mean relative to a `now_ms` that belongs to
+/// a different call entirely. Use `to_array`/`from_array` directly,
+/// supplying your own `weigher`/`default_ttl_ms`, if you need either
+/// preserved.
+pub impl[K : Hash + Eq + FromJson, V : FromJson] FromJson for Larder[K, V] with fn from_json(
+  json,
+  path,
+) {
+  guard json is Object(fields) else {
+    raise JsonDecodeError((path, "Larder::from_json: expected an object"))
+  }
+  guard fields.get("capacity") is Some(capacity_json) else {
+    raise JsonDecodeError((path, "Larder::from_json: missing \"capacity\""))
+  }
+  guard fields.get("policy") is Some(policy_json) else {
+    raise JsonDecodeError((path, "Larder::from_json: missing \"policy\""))
+  }
+  guard fields.get("entries") is Some(entries_json) else {
+    raise JsonDecodeError((path, "Larder::from_json: missing \"entries\""))
+  }
+  let capacity : Int = @json.from_json(
+    capacity_json,
+    path=path.add_key("capacity"),
+  )
+  let policy = match policy_json {
+    String("lru") => Lru
+    String("lfu") => Lfu
+    _ =>
+      raise JsonDecodeError(
+        (
+          path.add_key("policy"),
+          "Larder::from_json: expected \"lru\" or \"lfu\"",
+        ),
+      )
+  }
+  guard entries_json is Array(items) else {
+    raise JsonDecodeError(
+      (path.add_key("entries"), "Larder::from_json: expected an array"),
+    )
+  }
+  let cache : Larder[K, V] = Larder::new(capacity~, policy~)
+  for i, item in items {
+    let item_path = path.add_key("entries").add_index(i)
+    guard item is Object(entry_fields) else {
+      raise JsonDecodeError(
+        (item_path, "Larder::from_json: expected an object"),
+      )
+    }
+    guard entry_fields.get("key") is Some(key_json) else {
+      raise JsonDecodeError((item_path, "Larder::from_json: missing \"key\""))
+    }
+    guard entry_fields.get("value") is Some(value_json) else {
+      raise JsonDecodeError((item_path, "Larder::from_json: missing \"value\""))
+    }
+    let key : K = @json.from_json(key_json, path=item_path.add_key("key"))
+    let value : V = @json.from_json(value_json, path=item_path.add_key("value"))
+    cache.set(key, value, now_ms=0L)
+  }
+  cache
+}
+
+///|
+pub extend Larder with ToJson::{to_json}
+
+///|
+pub extend Larder with @moonbitlang/core/json.FromJson::{from_json}
+
+///|
 /// Inserts or updates `key`, moving it to the most-recently-used position
 /// under `Lru`, or bumping its access frequency under `Lfu` (a new key
 /// always starts at the lowest frequency either way).
