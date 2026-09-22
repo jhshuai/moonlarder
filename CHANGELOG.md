@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.7.0]
+
+### Added
+
+- `moonlarder_scaling_bench_test.mbt`: benchmarks `get`/`set` against a
+  deliberately naive O(capacity) reference LRU cache at capacities
+  100/1,000/10,000, to make the payoff of the `Map`-backed O(1) design
+  measurable rather than asserted. See the README's "Does the
+  `Map`-based design actually pay for itself?" section for results.
+
 ## [0.6.0]
 
 ### Added

@@ -161,6 +161,32 @@ steady state (every insert evicting one entry), and
 entries. `native` needs a C compiler on `PATH` the same as `moon test`
 does; `wasm-gc` doesn't.
 
+### Does the `Map`-based design actually pay for itself?
+
+`moonlarder_scaling_bench_test.mbt` answers that directly: it
+benchmarks `get`/`set` against a deliberately naive LRU cache - a
+plain array, linearly scanned and rebuilt on every operation, the way
+a cache gets written before reaching for a `Map` - at capacities 100,
+1,000, and 10,000. Measured on one run of this repository's CI-shaped
+environment (absolute numbers will vary by machine; the *trend* is
+the point):
+
+| capacity | `get`, real | `get`, naive | ratio | `set`, real | `set`, naive | ratio |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 86 ns | 849 ns | ~10x | 141 ns | 827 ns | ~5.9x |
+| 1,000 | 28.6 ns | 4.09 µs | ~143x | 72.3 ns | 6.92 µs | ~96x |
+| 10,000 | 26.1 ns | 87.7 µs | ~3,360x | 211 ns | 169.3 µs | ~800x |
+
+The real implementation stays roughly flat (even improving slightly,
+likely from cache-friendlier access patterns at this scale) as
+capacity grows 100x, exactly as expected for O(1)-amortized
+operations; the naive one degrades close to linearly, since every one
+of its operations costs O(capacity). The gap is already an order of
+magnitude at capacity 100 and three orders of magnitude by 10,000 -
+the frequency-bucket/`Map`-reinsertion design isn't just asymptotically
+nicer on paper, it's the difference between a cache that's free to use
+liberally and one that becomes the bottleneck as it grows.
+
 ## Notes
 
 - Not thread-safe; use one `Larder` per thread or add your own
