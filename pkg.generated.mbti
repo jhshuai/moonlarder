@@ -20,6 +20,22 @@ pub fn EvictionPolicy::equal(Self, Self) -> Bool
 pub fn EvictionPolicy::not_equal(Self, Self) -> Bool
 pub fn EvictionPolicy::to_repr(Self) -> @debug.Repr
 
+pub struct FrequencySketch[K] {
+  table : Array[Int]
+  width : Int
+  mut additions : Int
+  sample_size : Int
+}
+pub fn[K] FrequencySketch::clear(Self[K]) -> Unit
+pub fn[K : Hash] FrequencySketch::estimate(Self[K], K) -> Int
+pub fn[K : Hash] FrequencySketch::increment(Self[K], K) -> Unit
+pub fn[K] FrequencySketch::new(capacity~ : Int) -> Self[K]
+pub fn[K] FrequencySketch::output(Self[K], &Logger) -> Unit
+pub fn[K] FrequencySketch::to_repr(Self[K]) -> @debug.Repr
+pub fn[K] FrequencySketch::to_string(Self[K]) -> String
+pub impl[K] Show for FrequencySketch[K]
+pub impl[K] @debug.Debug for FrequencySketch[K]
+
 pub struct Larder[K, V] {
   table : Map[K, Slot[V]]
   policy : EvictionPolicy

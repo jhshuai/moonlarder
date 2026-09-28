@@ -6,6 +6,25 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.11.0]
+
+### Added
+
+- `FrequencySketch[K]` - a Count-Min Sketch (Cormode and Muthukrishnan,
+  "An Improved Data Stream Summary: The Count-Min Sketch and its
+  Applications", 2005): a fixed-space, approximate "how many times
+  have I seen this key?" counter, sized and aged (capped counters,
+  periodic halving) the way Einziger, Friedman, and Manes' TinyLFU uses
+  one for cache admission decisions. Public and useful independent of
+  `Larder` - `K` only needs `Hash`, not `Eq`, since a sketch never
+  stores or compares keys, only the positions their hashes land on.
+  Covered by hand-picked unit tests (saturation, aging, independence
+  between unrelated keys) and a new quickcheck property differentially
+  testing `estimate` against a naive exact `Map[K, Int]` of true
+  counts - the defining Count-Min Sketch guarantee (`estimate` never
+  underestimates, up to its own cap). Not yet wired into `Larder`
+  itself; see the next release for that.
+
 ## [0.10.0]
 
 ### Added

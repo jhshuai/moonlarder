@@ -129,6 +129,28 @@ for real entries, two ghost lists of evicted keys - standing in for the
 paper's own linked lists, just with `Map` for the hand-rolled
 hash-set-plus-doubly-linked-list most implementations use).
 
+### Frequency estimation
+
+`FrequencySketch[K]` is a Count-Min Sketch (Cormode and Muthukrishnan,
+2005) - a fixed-space, approximate "how many times have I seen this
+key?" counter, the building block TinyLFU-style cache admission
+policies use to judge whether a newcomer is popular enough to deserve
+displacing an existing entry. It's public and useful on its own,
+independent of `Larder`:
+
+```moonbit nocheck
+let sketch : FrequencySketch[String] = FrequencySketch::new(capacity=10_000)
+sketch.increment("popular-key")
+sketch.increment("popular-key")
+sketch.estimate("popular-key") // 2 - never lower than the true count,
+                                // possibly higher from hash collisions
+```
+
+Space stays fixed no matter how many distinct keys are ever seen -
+the trade against an exact `Map[K, Int]` - and counts are capped and
+periodically halved so `estimate` tracks *recent* popularity rather
+than accumulating forever.
+
 `Larder[K, V]` implements `ToJson`/`FromJson` when `K`/`V` do, for
 persisting and rehydrating a cache across a restart:
 
@@ -199,6 +221,14 @@ seeing a half-finished removal.
   why (`Explicit`, `Replaced`, `Expired`, or `Evicted`); see below
 - `ToJson`/`FromJson` — snapshot to and rehydrate from JSON (see above)
 
+`FrequencySketch[K]`, independent of `Larder`:
+
+- `FrequencySketch::new(capacity~)` — create an empty sketch
+- `increment(key)` — record one occurrence of `key`
+- `estimate(key)` — an approximate count, never below the true count
+  while under the per-counter cap (15)
+- `clear()` — reset every counter to zero
+
 See `pkg.generated.mbti` for the full signature list.
 
 ## Testing
@@ -218,6 +248,11 @@ trustworthy independent model of an adaptive algorithm is itself
 nontrivial to write; hand-picked unit tests in `moonlarder_test.mbt`
 cover the specific cases (T1-to-T2 promotion, both ghost-list hits) a
 random sequence might take a while to stumble onto reliably.
+
+`frequency_sketch_qc_test.mbt` does the same differential comparison
+for `FrequencySketch`, against a naive exact `Map[K, Int]` of true
+counts: `estimate(key)` must never fall below `key`'s true count (up
+to the sketch's own cap), the defining Count-Min Sketch guarantee.
 
 ## Benchmarks
 
