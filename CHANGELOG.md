@@ -6,6 +6,33 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.9.0]
+
+### Added
+
+- A third eviction policy: `Larder::new`'s `policy?` parameter now also
+  accepts `Arc` - Adaptive Replacement Cache (Megiddo and Modha, "ARC:
+  A Self-Tuning, Low Overhead Replacement Cache", FAST 2003), the
+  algorithm behind ZFS's and PostgreSQL's buffer caches. Unlike `Lru`
+  (recency only) or `Lfu` (frequency only), `Arc` adapts between the
+  two based on the cache's own observed hit pattern, without any
+  parameter to tune - implemented, like `Lru`/`Lfu`, on top of
+  `moonbitlang/core`'s `Map` rather than a hand-rolled structure
+  (`arc_t1`/`arc_t2` for real entries, `arc_b1`/`arc_b2` ghost lists of
+  recently evicted keys, and an adaptive target size `arc_p`). Not
+  compatible with a custom `weigher` - `new` aborts if both are given -
+  and its ghost-list bookkeeping is driven by `set()`, since this
+  library's `get`/`set` split doesn't give a single "request" event the
+  way the original algorithm assumes.
+- `cmd/main`'s tour now includes a side-by-side `Arc` vs. `Lru` demo: a
+  small hot working set followed by a one-time sequential scan, the
+  textbook case where plain LRU evicts the entire working set and ARC
+  doesn't.
+- Three new quickcheck properties (`Arc` never exceeds capacity, its
+  `to_array` always agrees with `peek`, its `on_remove` firing counts
+  match `stats()`) alongside hand-picked unit tests covering T1-to-T2
+  promotion, both ghost-list hit cases, and cleanup on `remove`/`resize`.
+
 ## [0.8.0]
 
 ### Added

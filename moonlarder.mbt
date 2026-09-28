@@ -10,6 +10,15 @@ pub(all) enum EvictionPolicy {
   /// it can be evicted almost immediately if the cache is already full
   /// of entries accessed more than once.
   Lfu
+  /// Adaptively balances between recency and frequency (Megiddo and
+  /// Modha, "ARC: A Self-Tuning, Low Overhead Replacement Cache", FAST
+  /// 2003 - the algorithm ZFS's and PostgreSQL's buffer caches are
+  /// built on), instead of committing to one or the other up front the
+  /// way `Lru`/`Lfu` do. See `Larder::new`'s doc comment for what that
+  /// buys you, this implementation's scope, and how it's adapted to
+  /// fit `get`/`set` being separate calls. Not compatible with a
+  /// custom `weigher` - `new` aborts if both are given.
+  Arc
 } derive(Eq, Debug)
 
 ///|
@@ -30,7 +39,7 @@ pub(all) enum RemovalCause {
   /// Dropped for being past its time-to-live, whether discovered lazily
   /// (`get`/`contains`/`touch_ttl`) or by an explicit `purge_expired`.
   Expired
-  /// Dropped by LRU or LFU eviction under capacity/weight pressure.
+  /// Dropped by eviction under capacity/weight pressure, per `policy`.
   Evicted
 } derive(Eq, Debug)
 
@@ -73,6 +82,18 @@ pub struct Larder[K, V] {
   // bucket. Both stay empty/unused under the Lru policy.
   freq_buckets : Map[Int, Map[K, Unit]]
   mut min_freq : Int
+  // ARC bookkeeping (Megiddo & Modha): arc_t1/arc_t2 are the "seen
+  // once recently" and "seen more than once" lists that between them
+  // hold every real entry; arc_b1/arc_b2 are ghost lists remembering
+  // keys recently evicted from arc_t1/arc_t2 (no values - just enough
+  // to recognize "this was here before"); arc_p is the current target
+  // size for arc_t1. All stay empty/zero under the Lru and Lfu
+  // policies.
+  arc_t1 : Map[K, Unit]
+  arc_t2 : Map[K, Unit]
+  arc_b1 : Map[K, Unit]
+  arc_b2 : Map[K, Unit]
+  mut arc_p : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int
@@ -112,6 +133,7 @@ pub impl[K, V] Show for Larder[K, V] with fn output(self, logger) {
   let policy = match self.policy {
     Lru => "lru"
     Lfu => "lfu"
+    Arc => "arc"
   }
   logger.write_string(
     "Larder(size=\{self.table.length()}, capacity=\{self.capacity}, weight=\{self.current_weight}, policy=\{policy})",
@@ -163,6 +185,13 @@ pub fn[K : Hash + Eq, V] Larder::new(
   guard capacity > 0 else {
     abort("Larder::new: capacity must be positive, got \{capacity}")
   }
+  let arc_with_weigher = match (policy, weigher) {
+    (Some(Arc), Some(_)) => true
+    _ => false
+  }
+  guard !arc_with_weigher else {
+    abort("Larder::new: the Arc policy doesn't support a custom weigher")
+  }
   {
     table: {},
     policy: match policy {
@@ -182,6 +211,11 @@ pub fn[K : Hash + Eq, V] Larder::new(
     current_weight: 0,
     freq_buckets: {},
     min_freq: 1,
+    arc_t1: {},
+    arc_t2: {},
+    arc_b1: {},
+    arc_b2: {},
+    arc_p: 0,
     hit_count: 0,
     miss_count: 0,
     eviction_count: 0,
@@ -344,6 +378,10 @@ fn[K : Hash + Eq, V] Larder::discard(
   match self.policy {
     Lru => ()
     Lfu => self.lfu_forget(key, slot.freq)
+    Arc => {
+      self.arc_t1.remove(key)
+      self.arc_t2.remove(key)
+    }
   }
   (self.on_remove)(key, slot.value, cause)
 }
@@ -387,11 +425,123 @@ fn[K : Hash + Eq, V] Larder::evict_lfu(self : Larder[K, V]) -> Unit {
 }
 
 ///|
+/// ARC's REPLACE(x, p) procedure: evicts one real entry, moving it to
+/// the corresponding ghost list (`arc_b1`/`arc_b2`), choosing `arc_t1`
+/// over `arc_t2` when `arc_t1` is over its target size `arc_p` - or, on
+/// a tie with the target, when the request that triggered this
+/// replacement was itself a ghost hit in `arc_b2` (`key_in_b2`). Only
+/// called under the `Arc` policy.
+fn[K : Hash + Eq, V] Larder::arc_replace(
+  self : Larder[K, V],
+  key_in_b2 : Bool,
+) -> Unit {
+  let t1_len = self.arc_t1.length()
+  let from_t1 = t1_len >= 1 &&
+    (t1_len > self.arc_p || (key_in_b2 && t1_len == self.arc_p))
+  if from_t1 {
+    for victim in self.arc_t1.keys() {
+      self.arc_t1.remove(victim)
+      self.arc_b1.set(victim, ())
+      match self.table.get(victim) {
+        Some(slot) => {
+          self.discard(victim, slot, Evicted)
+          self.eviction_count += 1
+        }
+        None => ()
+      }
+      break
+    }
+  } else {
+    for victim in self.arc_t2.keys() {
+      self.arc_t2.remove(victim)
+      self.arc_b2.set(victim, ())
+      match self.table.get(victim) {
+        Some(slot) => {
+          self.discard(victim, slot, Evicted)
+          self.eviction_count += 1
+        }
+        None => ()
+      }
+      break
+    }
+  }
+}
+
+///|
+/// Handles a `set()` on a key not currently in the cache, under the
+/// `Arc` policy: adapts `arc_p` and runs `arc_replace` when `key` is a
+/// ghost hit (cases I/II of Megiddo & Modha's algorithm), or makes room
+/// per the cache's current fill state on a true miss (case III/IV),
+/// then records `key` in `arc_t1` (true miss) or `arc_t2` (ghost hit) -
+/// but does not touch `table` itself, which `set` handles right after
+/// calling this. Only called under the `Arc` policy, before the new
+/// entry is inserted.
+fn[K : Hash + Eq, V] Larder::arc_insert_new_key(
+  self : Larder[K, V],
+  key : K,
+) -> Unit {
+  let in_b1 = self.arc_b1.contains(key)
+  let in_b2 = self.arc_b2.contains(key)
+  if in_b1 {
+    let delta = (self.arc_b2.length() / self.arc_b1.length()).max(1)
+    self.arc_p = (self.arc_p + delta).min(self.capacity)
+    self.arc_replace(false)
+    self.arc_b1.remove(key)
+    self.arc_t2.set(key, ())
+  } else if in_b2 {
+    let delta = (self.arc_b1.length() / self.arc_b2.length()).max(1)
+    self.arc_p = (self.arc_p - delta).max(0)
+    self.arc_replace(true)
+    self.arc_b2.remove(key)
+    self.arc_t2.set(key, ())
+  } else {
+    let t1_len = self.arc_t1.length()
+    let b1_len = self.arc_b1.length()
+    let t2_len = self.arc_t2.length()
+    let b2_len = self.arc_b2.length()
+    if t1_len + b1_len == self.capacity {
+      if t1_len < self.capacity {
+        for oldest in self.arc_b1.keys() {
+          self.arc_b1.remove(oldest)
+          break
+        }
+        self.arc_replace(false)
+      } else {
+        // |T1| == capacity (so B1 is empty): T1 alone already fills the
+        // whole cache, so its LRU entry is dropped outright rather than
+        // becoming a ghost.
+        for victim in self.arc_t1.keys() {
+          self.arc_t1.remove(victim)
+          match self.table.get(victim) {
+            Some(slot) => {
+              self.discard(victim, slot, Evicted)
+              self.eviction_count += 1
+            }
+            None => ()
+          }
+          break
+        }
+      }
+    } else if t1_len + t2_len + b1_len + b2_len >= self.capacity {
+      if t1_len + t2_len + b1_len + b2_len >= 2 * self.capacity {
+        for oldest in self.arc_b2.keys() {
+          self.arc_b2.remove(oldest)
+          break
+        }
+      }
+      self.arc_replace(false)
+    }
+    self.arc_t1.set(key, ())
+  }
+}
+
+///|
 /// Evicts one entry per `policy`, if any.
 fn[K : Hash + Eq, V] Larder::evict_one(self : Larder[K, V]) -> Unit {
   match self.policy {
     Lru => self.evict_lru()
     Lfu => self.evict_lfu()
+    Arc => self.arc_replace(false)
   }
 }
 
@@ -430,6 +580,16 @@ fn[K : Hash + Eq, V] Larder::record_access(
   match self.policy {
     Lru => {
       self.touch(key, slot)
+      slot
+    }
+    Arc => {
+      if self.arc_t1.contains(key) {
+        self.arc_t1.remove(key)
+        self.arc_t2.set(key, ())
+      } else {
+        self.arc_t2.remove(key)
+        self.arc_t2.set(key, ())
+      }
       slot
     }
     Lfu => {
@@ -515,10 +675,10 @@ pub fn[K, V] Larder::is_empty(self : Larder[K, V]) -> Bool {
 
 ///|
 /// Keys in least- to most-recently-used order under `Lru`, or plain
-/// insertion order under `Lfu` (the frequency bookkeeping doesn't track
-/// a total order over entries the way LRU's own position in `Map`
-/// already does for free). Includes entries that have expired but
-/// haven't been purged yet, either way.
+/// insertion order under `Lfu`/`Arc` (neither's own bookkeeping tracks a
+/// total order over entries the way LRU's position in `Map` already
+/// does for free). Includes entries that have expired but haven't been
+/// purged yet, either way.
 pub fn[K, V] Larder::keys(self : Larder[K, V]) -> Iter[K] {
   self.table.keys()
 }
@@ -567,7 +727,7 @@ pub fn[K, V] Larder::to_array(
 }
 
 ///|
-/// `{"capacity": .., "policy": "lru"|"lfu", "entries": [{"key": ..,
+/// `{"capacity": .., "policy": "lru"|"lfu"|"arc", "entries": [{"key": ..,
 /// "value": ..}, ..]}`. Includes every stored entry, expired or not -
 /// the same contract as `keys`/`values`, since `ToJson`'s signature
 /// takes no clock to compare deadlines against. Call `purge_expired`
@@ -578,6 +738,7 @@ pub impl[K : ToJson, V : ToJson] ToJson for Larder[K, V] with fn to_json(self) {
   let policy = match self.policy {
     Lru => "lru"
     Lfu => "lfu"
+    Arc => "arc"
   }
   let entries = []
   for key, slot in self.table {
@@ -632,11 +793,12 @@ pub impl[K : Hash + Eq + FromJson, V : FromJson] FromJson for Larder[K, V] with 
   let policy = match policy_json {
     String("lru") => Lru
     String("lfu") => Lfu
+    String("arc") => Arc
     _ =>
       raise JsonDecodeError(
         (
           path.add_key("policy"),
-          "Larder::from_json: expected \"lru\" or \"lfu\"",
+          "Larder::from_json: expected \"lru\", \"lfu\", or \"arc\"",
         ),
       )
   }
@@ -701,20 +863,38 @@ pub fn[K : Hash + Eq, V] Larder::set(
       self.current_weight -= old_slot.weight
       let freq = match self.policy {
         Lru => old_slot.freq
+        Arc => old_slot.freq
         Lfu => self.lfu_bump(key, old_slot.freq)
       }
       let new_slot = { value, expire_at, weight, freq, }
       match self.policy {
         Lru => self.touch(key, new_slot)
         Lfu => self.table.set(key, new_slot)
+        Arc => {
+          if self.arc_t1.contains(key) {
+            self.arc_t1.remove(key)
+            self.arc_t2.set(key, ())
+          } else {
+            self.arc_t2.remove(key)
+            self.arc_t2.set(key, ())
+          }
+          self.table.set(key, new_slot)
+        }
       }
       (self.on_remove)(key, old_slot.value, Replaced)
     }
     None => {
-      self.table.set(key, { value, expire_at, weight, freq: 1, })
+      let new_slot : Slot[V] = { value, expire_at, weight, freq: 1, }
       match self.policy {
-        Lru => ()
-        Lfu => self.lfu_register(key)
+        Lru => self.table.set(key, new_slot)
+        Lfu => {
+          self.table.set(key, new_slot)
+          self.lfu_register(key)
+        }
+        Arc => {
+          self.arc_insert_new_key(key)
+          self.table.set(key, new_slot)
+        }
       }
     }
   }
@@ -749,6 +929,7 @@ pub fn[K : Hash + Eq, V] Larder::touch_ttl(
         let expire_at = self.resolve_expiry(now_ms, ttl_ms)
         let freq = match self.policy {
           Lru => slot.freq
+          Arc => slot.freq
           Lfu => self.lfu_bump(key, slot.freq)
         }
         let new_slot = {
@@ -760,6 +941,16 @@ pub fn[K : Hash + Eq, V] Larder::touch_ttl(
         match self.policy {
           Lru => self.touch(key, new_slot)
           Lfu => self.table.set(key, new_slot)
+          Arc => {
+            if self.arc_t1.contains(key) {
+              self.arc_t1.remove(key)
+              self.arc_t2.set(key, ())
+            } else {
+              self.arc_t2.remove(key)
+              self.arc_t2.set(key, ())
+            }
+            self.table.set(key, new_slot)
+          }
         }
         true
       }
@@ -842,6 +1033,11 @@ pub fn[K, V] Larder::clear(self : Larder[K, V]) -> Unit {
   self.current_weight = 0
   self.freq_buckets.clear()
   self.min_freq = 1
+  self.arc_t1.clear()
+  self.arc_t2.clear()
+  self.arc_b1.clear()
+  self.arc_b2.clear()
+  self.arc_p = 0
   self.hit_count = 0
   self.miss_count = 0
   self.eviction_count = 0
@@ -943,6 +1139,7 @@ pub fn[K : Hash + Eq, V] Larder::resize(
     abort("Larder::resize: capacity must be positive, got \{new_capacity}")
   }
   self.capacity = new_capacity
+  self.arc_p = self.arc_p.min(new_capacity)
   self.enforce_capacity()
 }
 

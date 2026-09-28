@@ -1,8 +1,8 @@
 # moonlarder
 
-A generic in-memory cache for MoonBit with LRU eviction, TTL expiry, and a
-memoizing `get_or_insert_with` helper, combined in a single bounded
-structure.
+A generic in-memory cache for MoonBit with a choice of LRU, LFU, or ARC
+eviction, TTL expiry, and a memoizing `get_or_insert_with` helper,
+combined in a single bounded structure.
 
 ## Install
 
@@ -17,7 +17,8 @@ moon run cmd/main --target wasm-gc
 ```
 
 `cmd/main` is a runnable tour of LRU eviction, TTL expiry, memoization,
-weighted capacity, the LFU policy, and JSON snapshotting - each step
+weighted capacity, the LFU and ARC policies, and JSON snapshotting -
+each step
 prints what it did and why. It uses an explicit `now_ms` throughout
 rather than a real clock (the same as everything else in this
 library), so its output is identical on every target: swap `wasm-gc`
@@ -83,13 +84,34 @@ once (that's LFU's own definition at work, not a bug):
 let cache : Larder[String, Int] = Larder::new(capacity=100, policy=Lfu)
 ```
 
-`Larder` doesn't hand-roll a linked list or a heap for either policy;
-both are built on `moonbitlang/core`'s own `Map` (LRU reorders on
-access the same way a real linked-list-backed LRU would; LFU keeps a
+For workloads with both a hot, frequently-reused set of keys and
+occasional one-time bulk scans that shouldn't be allowed to evict it,
+`policy=Arc` runs Adaptive Replacement Cache (Megiddo and Modha, FAST
+2003 - the algorithm ZFS's and PostgreSQL's buffer caches are built
+on), which adapts between recency and frequency on its own rather than
+committing to one the way `Lru`/`Lfu` do, with no parameter to tune:
+
+```moonbit nocheck
+let cache : Larder[String, Int] = Larder::new(capacity=100, policy=Arc)
+```
+
+`Arc` isn't compatible with a custom `weigher` - `new` aborts if both
+are given - and its ghost-list bookkeeping (which real entry was
+recently evicted, and from where) is driven by `set()`, since this
+library's separate `get`/`set` calls don't give it the single "cache
+request" event the original algorithm is built around; see
+`EvictionPolicy::Arc`'s doc comment for the exact adaptation. `cmd/main`
+includes a side-by-side demo against plain LRU under a hot-set-plus-scan
+workload - the textbook case ARC exists for.
+
+`Larder` doesn't hand-roll a linked list or a heap for any of the three
+policies; all are built on `moonbitlang/core`'s own `Map` (LRU reorders
+on access the same way a real linked-list-backed LRU would; LFU keeps a
 `Map[Int, Map[K, Unit]]` of frequency buckets, the same structure the
-classic O(1) LFU algorithm describes, just with `Map` standing in for
-the hand-rolled hash-set-plus-doubly-linked-list most implementations
-use).
+classic O(1) LFU algorithm describes; ARC keeps four such `Map`s - two
+for real entries, two ghost lists of evicted keys - standing in for the
+paper's own linked lists, just with `Map` for the hand-rolled
+hash-set-plus-doubly-linked-list most implementations use).
 
 `Larder[K, V]` implements `ToJson`/`FromJson` when `K`/`V` do, for
 persisting and rehydrating a cache across a restart:
@@ -99,10 +121,11 @@ let snapshot : Json = ToJson::to_json(cache)
 let restored : Larder[String, Int] = @json.from_json(snapshot)
 ```
 
-The snapshot is `{"capacity": .., "policy": "lru"|"lfu", "entries":
+The snapshot is `{"capacity": .., "policy": "lru"|"lfu"|"arc", "entries":
 [{"key": .., "value": ..}, ..]}`. It's a snapshot of *contents*, not a
-byte-for-byte save state: LRU recency order, LFU frequencies, and TTLs
-don't survive the round trip (a reloaded entry never expires on its
+byte-for-byte save state: LRU recency order, LFU frequencies, ARC's
+T1/T2/ghost-list state, and TTLs don't survive the round trip (a
+reloaded entry never expires on its
 own, and `FromJson` always uses the default count-based weigher, since
 a weigher is a function and there's nothing in JSON to deserialize it
 from). Use `to_array`/`from_array` directly, supplying your own
@@ -168,7 +191,13 @@ most notably, that the real `Map`-based LRU and LFU implementations
 agree with independent, deliberately naive reference models (plain
 arrays and linear scans, no shared code with the real implementation)
 on every hit/miss and on the final set of surviving keys, across 100
-random sequences each run.
+random sequences each run. `Arc` gets its own properties in the same
+file (capacity never exceeded, `to_array`/`peek` agreement, `on_remove`
+counts matching `stats()`) rather than a naive reference model, since a
+trustworthy independent model of an adaptive algorithm is itself
+nontrivial to write; hand-picked unit tests in `moonlarder_test.mbt`
+cover the specific cases (T1-to-T2 promotion, both ghost-list hits) a
+random sequence might take a while to stumble onto reliably.
 
 ## Benchmarks
 

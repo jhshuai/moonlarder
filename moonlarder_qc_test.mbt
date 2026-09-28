@@ -237,6 +237,95 @@ fn prop_capacity_is_never_exceeded(ops : Array[(Int, Int, Int)]) -> Bool {
 }
 
 ///|
+/// Same invariant as `prop_capacity_is_never_exceeded`, but under `Arc`,
+/// which (unlike `Lru`/`Lfu`) doesn't just react to being over capacity
+/// after the fact - it's supposed to keep `arc_t1`/`arc_t2` within
+/// `capacity` as part of inserting a new key in the first place. `Arc`
+/// doesn't support a `weigher`, so there's no oversized-entry exception
+/// to make room for here: `size() <= capacity()` must hold after every
+/// single operation, not just settle there eventually.
+fn prop_arc_capacity_is_never_exceeded(ops : Array[(Int, Int, Int)]) -> Bool {
+  let capacity = 5
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    policy=@moonlarder.Arc,
+  )
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 4 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      2 => ignore(cache.remove(key))
+      _ => ignore(cache.retain(fn(k, _v) { k != key }))
+    }
+    if cache.size() > cache.capacity() {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Same check as `prop_to_array_agrees_with_peek`, run against an `Arc`
+/// cache - `to_array`'s report and `table`'s own contents must never
+/// drift apart, regardless of how `arc_t1`/`arc_t2`/`arc_b1`/`arc_b2`
+/// bookkeeping moves a key around behind the scenes.
+fn prop_arc_to_array_agrees_with_peek(ops : Array[(Int, Int, Int)]) -> Bool {
+  let capacity = 5
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    policy=@moonlarder.Arc,
+  )
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 3 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      _ => ignore(cache.remove(key))
+    }
+  }
+  for entry in cache.to_array(now_ms=0L) {
+    if cache.peek(entry.0, now_ms=0L) != Some(entry.1) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// `on_remove`'s Evicted counts must match `stats()` under `Arc` too -
+/// same cross-check as `prop_on_remove_counts_match_stats`, but
+/// exercising `arc_replace`'s two call sites (`arc_insert_new_key`'s
+/// ghost-hit and true-miss paths) instead of `evict_lru`/`evict_lfu`.
+fn prop_arc_on_remove_counts_match_stats(ops : Array[(Int, Int, Int)]) -> Bool {
+  let capacity = 5
+  let evicted = [0]
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    policy=@moonlarder.Arc,
+    on_remove=fn(_key, _value, cause) {
+      match cause {
+        Evicted => evicted[0] = evicted[0] + 1
+        _ => ()
+      }
+    },
+  )
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 4 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      2 => ignore(cache.remove(key))
+      _ => ignore(cache.retain(fn(k, _v) { k != key }))
+    }
+  }
+  evicted[0] == cache.stats().evictions
+}
+
+///|
 /// Every entry `to_array` reports present must actually be gettable
 /// (via `peek`, so the check itself doesn't disturb recency) with the
 /// exact value `to_array` reported.
@@ -368,4 +457,19 @@ test "property: a JSON round trip preserves every live entry" {
 ///|
 test "property: on_remove firing counts match stats() exactly" {
   @quickcheck.quick_check_fn(prop_on_remove_counts_match_stats)
+}
+
+///|
+test "property: Arc never exceeds capacity, not even transiently" {
+  @quickcheck.quick_check_fn(prop_arc_capacity_is_never_exceeded)
+}
+
+///|
+test "property: Arc's to_array always agrees with peek" {
+  @quickcheck.quick_check_fn(prop_arc_to_array_agrees_with_peek)
+}
+
+///|
+test "property: Arc's on_remove firing counts match stats() exactly" {
+  @quickcheck.quick_check_fn(prop_arc_on_remove_counts_match_stats)
 }

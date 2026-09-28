@@ -1,19 +1,20 @@
 ///|
 /// A runnable tour of `moonlarder`, covering LRU eviction, TTL expiry,
-/// memoization, weighted capacity, the LFU eviction policy, removal
-/// listeners, and JSON snapshotting. Every step uses an explicit
-/// `now_ms` rather than a real clock, on purpose: `Larder` never reads
-/// time on its own, so this program's behavior is exactly reproducible
-/// on every target `moon run cmd/main` can build for.
+/// memoization, weighted capacity, the LFU and ARC eviction policies,
+/// removal listeners, and JSON snapshotting. Every step uses an
+/// explicit `now_ms` rather than a real clock, on purpose: `Larder`
+/// never reads time on its own, so this program's behavior is exactly
+/// reproducible on every target `moon run cmd/main` can build for.
 fn main {
   println(
-    "moonlarder -- a generic in-memory cache with LRU/LFU eviction, TTL, and JSON snapshots",
+    "moonlarder -- a generic in-memory cache with LRU/LFU/ARC eviction, TTL, and JSON snapshots",
   )
   demo_lru()
   demo_ttl()
   demo_memoize()
   demo_weighted()
   demo_lfu()
+  demo_arc()
   demo_removal_listener()
   demo_json()
 }
@@ -131,6 +132,48 @@ fn demo_lfu() -> Unit {
   println(
     "\"popular\" survives on frequency alone: get(\"popular\") = \{popular}",
   )
+}
+
+///|
+fn demo_arc() -> Unit {
+  println("\n== ARC: adapting to a scan that plain LRU falls for ==")
+  // A small, frequently-reused working set ("hot:1".."hot:3"), interrupted
+  // partway through by a single long sequential scan ("scan:0".."scan:9")
+  // that's never touched again - the classic case plain LRU handles badly,
+  // since the scan evicts the whole working set on its way through.
+  let lru : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=5,
+  )
+  let arc : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=5,
+    policy=Arc,
+  )
+  fn workload(cache : @moonlarder.Larder[String, Int]) -> Unit {
+    for key in ["hot:1", "hot:2", "hot:3"] {
+      cache.set(key, 1, now_ms=0L)
+    }
+    ignore(cache.get("hot:1", now_ms=0L))
+    ignore(cache.get("hot:2", now_ms=0L))
+    for i = 0; i < 10; i = i + 1 {
+      cache.set("scan:\{i}", i, now_ms=0L)
+    }
+  }
+
+  workload(lru)
+  workload(arc)
+  let lru_survivors = ["hot:1", "hot:2", "hot:3"].filter(fn(key) {
+    lru.contains(key, now_ms=0L)
+  })
+  let arc_survivors = ["hot:1", "hot:2", "hot:3"].filter(fn(key) {
+    arc.contains(key, now_ms=0L)
+  })
+  println(
+    "after a one-time scan of 10 keys through a capacity-5 cache, on top of a hot set used just before it:",
+  )
+  let lru_text = @moonbitlang/core/debug.to_string(lru_survivors)
+  let arc_text = @moonbitlang/core/debug.to_string(arc_survivors)
+  println("  Lru  keeps of the hot set: \{lru_text}")
+  println("  Arc  keeps of the hot set: \{arc_text}")
 }
 
 ///|

@@ -14,6 +14,7 @@ import {
 pub(all) enum EvictionPolicy {
   Lru
   Lfu
+  Arc
 } derive(Eq, @debug.Debug)
 pub fn EvictionPolicy::equal(Self, Self) -> Bool
 pub fn EvictionPolicy::not_equal(Self, Self) -> Bool
@@ -29,6 +30,11 @@ pub struct Larder[K, V] {
   mut current_weight : Int
   freq_buckets : Map[Int, Map[K, Unit]]
   mut min_freq : Int
+  arc_t1 : Map[K, Unit]
+  arc_t2 : Map[K, Unit]
+  arc_b1 : Map[K, Unit]
+  arc_b2 : Map[K, Unit]
+  mut arc_p : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int

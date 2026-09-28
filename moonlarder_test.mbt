@@ -512,8 +512,13 @@ test "policy reports back what new was given" {
     capacity=1,
     policy=Lfu,
   )
+  let arc : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=Arc,
+  )
   assert_eq(lru.policy(), Lru)
   assert_eq(lfu.policy(), Lfu)
+  assert_eq(arc.policy(), Arc)
 }
 
 ///|
@@ -705,6 +710,76 @@ test "Lfu eviction advances past a stale min_freq left by an explicit remove" {
   assert_eq(c.stats().evictions, 1)
   assert_eq(c.get("b", now_ms=0L), None)
   assert_eq(c.get("d", now_ms=0L), Some(4))
+}
+
+///|
+test "panic Arc::new aborts if a weigher is given alongside the Arc policy" {
+  let _ : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=Arc,
+    weigher=fn(_key, _value) { 1 },
+  )
+}
+
+///|
+test "Arc promotes a key from T1 to T2 on a second access, sparing it from an eviction that instead takes the T1 side" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Arc,
+  )
+  c.set("a", 1, now_ms=0L) // T1 = [a]
+  c.set("b", 2, now_ms=0L) // T1 = [a, b]
+  ignore(c.get("a", now_ms=0L)) // T1 = [b], T2 = [a]
+  // Cache is now full with T1=1/T2=1 and p still at 0, so REPLACE's
+  // "evict from T1 unless it's already at or under the target" rule
+  // takes "b" (T1), not "a" (T2), even though "a" was touched earlier.
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.stats().evictions, 1)
+}
+
+///|
+test "Arc ghost hit in B1 raises the T1 target and evicts from T2 next" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Arc,
+  )
+  c.set("a", 1, now_ms=0L) // T1 = [a]
+  c.set("b", 2, now_ms=0L) // T1 = [a, b]
+  ignore(c.get("a", now_ms=0L)) // T1 = [b], T2 = [a]
+  c.set("c", 3, now_ms=0L) // evicts "b" (T1) -> B1 = [b]; T1 = [c], T2 = [a]
+  assert_eq(c.get("b", now_ms=0L), None)
+  // Re-inserting "b" is a ghost hit in B1: p rises from 0 towards
+  // capacity, and this time REPLACE's target favors keeping T1 (now at
+  // its raised target) and evicts from T2 ("a") instead.
+  c.set("b", 20, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some(20))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.stats().evictions, 2)
+}
+
+///|
+test "Arc composes with removal listeners and a resize, cleaning up T1/T2 either way" {
+  let removed = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=Arc,
+    on_remove=fn(key, _value, _cause) { removed.push(key) },
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L) // T1 = [a, b, c], exactly at capacity
+  assert_eq(c.remove("a"), Some(1)) // explicit remove must also clear T1 membership
+  assert_eq(removed, ["a"])
+  c.set("d", 4, now_ms=0L) // "b", "c", "d" fit within capacity, no eviction
+  assert_eq(c.size(), 3)
+  assert_eq(c.stats().evictions, 0)
+  c.resize(1) // shrinks below size(), must evict via Arc's own path
+  assert_eq(c.size(), 1)
+  assert_eq(c.stats().evictions, 2)
 }
 
 ///|
