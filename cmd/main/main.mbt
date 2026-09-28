@@ -10,6 +10,7 @@ fn main {
     "moonlarder -- a generic in-memory cache with LRU/LFU/ARC eviction, TTL, and JSON snapshots",
   )
   demo_lru()
+  demo_bulk()
   demo_ttl()
   demo_memoize()
   demo_weighted()
@@ -39,6 +40,21 @@ fn demo_lru() -> Unit {
   )
   let survivors = @moonbitlang/core/debug.to_string(cache.to_array(now_ms=0L))
   println("\"a\", \"c\", \"d\" all survive: \{survivors}")
+}
+
+///|
+fn demo_bulk() -> Unit {
+  println("\n== Batch lookups and inserts ==")
+  let cache : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=10,
+  )
+  cache.set_many([("a", 1), ("b", 2), ("c", 3)], now_ms=0L)
+  println("set_many([(\"a\",1), (\"b\",2), (\"c\",3)]): \{cache}")
+  let found = cache.get_many(["c", "missing", "a"], now_ms=0L)
+  let found_text = @moonbitlang/core/debug.to_string(found)
+  println(
+    "get_many([\"c\", \"missing\", \"a\"]) -> only the hits, in order: \{found_text}",
+  )
 }
 
 ///|

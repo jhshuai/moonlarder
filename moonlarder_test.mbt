@@ -47,6 +47,52 @@ test "get refreshes recency so the touched entry survives eviction" {
 }
 
 ///|
+test "get_many returns only the hits, in order, updating recency and stats as get would" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=3)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  let results = c.get_many(["b", "missing", "a"], now_ms=0L)
+  assert_eq(results, [("b", 2), ("a", 1)])
+  assert_eq(c.stats(), { hits: 2, misses: 1, evictions: 0, expirations: 0, })
+  // get_many("b", ..) touched "b" before "a", so "a" is now the more
+  // recently used of the two - same as a `get("b")` then `get("a")` would.
+  c.set("c", 3, now_ms=0L)
+  c.set("d", 4, now_ms=0L) // over capacity: "b" (least recent) should go
+  assert_eq(c.get("b", now_ms=0L), None)
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+}
+
+///|
+test "get_many counts a repeated key as a separate hit each time it appears" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L)
+  let results = c.get_many(["a", "a", "missing"], now_ms=0L)
+  assert_eq(results, [("a", 1), ("a", 1)])
+  assert_eq(c.stats(), { hits: 2, misses: 1, evictions: 0, expirations: 0, })
+}
+
+///|
+test "set_many inserts every entry under one ttl, as if set had been called for each" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=5)
+  c.set_many([("a", 1), ("b", 2), ("c", 3)], now_ms=0L, ttl_ms=10L)
+  assert_eq(c.size(), 3)
+  assert_eq(c.get("a", now_ms=9L), Some(1))
+  assert_eq(c.get("b", now_ms=10L), None) // shared ttl expired for all three
+  assert_eq(c.get("c", now_ms=10L), None)
+}
+
+///|
+test "set_many can evict an earlier entry in the same call to make room for a later one" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set_many([("a", 1), ("b", 2), ("c", 3)], now_ms=0L)
+  assert_eq(c.size(), 2)
+  assert_eq(c.get("a", now_ms=0L), None) // inserted first, evicted first
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.stats().evictions, 1)
+}
+
+///|
 test "an entry past its per-call ttl is treated as absent" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
   c.set("a", 1, now_ms=0L, ttl_ms=10L)

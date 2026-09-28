@@ -46,6 +46,7 @@ pub fn[K : Hash + Eq, V] Larder::contains(Self[K, V], K, now_ms~ : Int64) -> Boo
 pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, on_remove? : (K, V, RemovalCause) -> Unit, now_ms~ : Int64) -> Self[K, V]
 pub fn[K : Hash + Eq + @json.FromJson, V : @json.FromJson] Larder::from_json(Json, @json.JsonPath) -> Self[K, V] raise @json.JsonDecodeError
 pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
+pub fn[K : Hash + Eq, V] Larder::get_many(Self[K, V], Array[K], now_ms~ : Int64) -> Array[(K, V)]
 pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
 pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool
 pub fn[K, V] Larder::iter(Self[K, V]) -> Iter[(K, V)]
@@ -60,6 +61,7 @@ pub fn[K : Hash + Eq, V] Larder::remove(Self[K, V], K) -> V?
 pub fn[K : Hash + Eq, V] Larder::resize(Self[K, V], Int) -> Unit
 pub fn[K : Hash + Eq, V] Larder::retain(Self[K, V], (K, V) -> Bool) -> Int
 pub fn[K : Hash + Eq, V] Larder::set(Self[K, V], K, V, now_ms~ : Int64, ttl_ms? : Int64) -> Unit
+pub fn[K : Hash + Eq, V] Larder::set_many(Self[K, V], Array[(K, V)], now_ms~ : Int64, ttl_ms? : Int64) -> Unit
 pub fn[K, V] Larder::size(Self[K, V]) -> Int
 pub fn[K, V] Larder::stats(Self[K, V]) -> Stats
 pub fn[K, V] Larder::to_array(Self[K, V], now_ms~ : Int64) -> Array[(K, V)]

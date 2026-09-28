@@ -58,6 +58,22 @@ Per-entry TTL overrides the cache-wide default:
 cache.set("short-lived", "value", now_ms=0L, ttl_ms=5_000L)
 ```
 
+`get_many`/`set_many` cover the batch case - looking up a page of IDs,
+or warming the cache from rows just read from a database - without
+writing the loop yourself at every call site:
+
+```moonbit nocheck
+cache.set_many([("a", 1), ("b", 2), ("c", 3)], now_ms=0L)
+let found = cache.get_many(["a", "missing", "c"], now_ms=0L)
+// found == [("a", 1), ("c", 3)] - only the hits, in the order asked
+```
+
+Each is exactly equivalent to calling `get`/`set` on every key or entry
+in turn - same recency updates, same `stats()` counting, and (for
+`set_many`) capacity is enforced as each entry goes in, so an entry
+earlier in the array can be evicted to make room for one later in the
+same call.
+
 By default, `capacity` counts entries. Pass `weigher` to weigh entries by
 something else instead - total byte size, say, so a handful of large
 values can't crowd out many small ones the way plain entry-counting
@@ -158,9 +174,13 @@ seeing a half-finished removal.
   — build a cache from an array in one call, as if `set` had been called
   for each entry in order
 - `get(key, now_ms~)` — look up a value, refreshing its recency on a hit
+- `get_many(keys, now_ms~)` — look up several keys in one call,
+  returning only the hits, in order
 - `peek(key, now_ms~)` — read a value without affecting recency or stats
 - `set(key, value, now_ms~, ttl_ms?)` — insert or update, evicting
   least-recently-used entries if the cache is now over capacity
+- `set_many(entries, now_ms~, ttl_ms?)` — insert or update several
+  entries under one ttl in one call
 - `get_or_insert_with(key, now_ms~, ttl_ms?, compute)` — memoize
 - `try_get_or_insert_with(key, now_ms~, ttl_ms?, compute)` — memoize a
   loader that can fail; the error propagates and nothing is stored

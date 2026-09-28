@@ -6,6 +6,19 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.10.0]
+
+### Added
+
+- `get_many(keys, now_ms~)` / `set_many(entries, now_ms~, ttl_ms?)` -
+  batch lookups and inserts, exactly equivalent to calling `get`/`set`
+  on each key or entry in turn (same recency updates, same `stats()`
+  counting, capacity enforced entry-by-entry for `set_many` so an
+  earlier entry in the array can be evicted to make room for a later
+  one in the same call). Covers the common "look up a page of IDs" or
+  "warm the cache from rows just read from a database" case without
+  every call site writing its own loop.
+
 ## [0.9.0]
 
 ### Added

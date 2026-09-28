@@ -636,6 +636,33 @@ pub fn[K : Hash + Eq, V] Larder::get(
 }
 
 ///|
+/// Looks up every key in `keys`, in order, returning only the hits as
+/// `(key, value)` pairs - equivalent to calling `get` on each one and
+/// collecting whichever returned `Some`, right down to updating
+/// recency and hit/miss counters the same number of times (a key
+/// repeated in `keys` is looked up, and counted, that many times over,
+/// not deduplicated first).
+///
+/// The usual reason to reach for this instead of a loop of `get` calls
+/// is a batch lookup by a list of IDs - filling in a page of search
+/// results from the cache, say - where the loop itself is boilerplate
+/// every call site would otherwise repeat.
+pub fn[K : Hash + Eq, V] Larder::get_many(
+  self : Larder[K, V],
+  keys : Array[K],
+  now_ms~ : Int64,
+) -> Array[(K, V)] {
+  let hits = []
+  for key in keys {
+    match self.get(key, now_ms~) {
+      Some(value) => hits.push((key, value))
+      None => ()
+    }
+  }
+  hits
+}
+
+///|
 /// Returns whether `key` is present and not expired, without affecting
 /// recency or hit/miss counters.
 pub fn[K : Hash + Eq, V] Larder::contains(
@@ -900,6 +927,27 @@ pub fn[K : Hash + Eq, V] Larder::set(
   }
   self.current_weight += weight
   self.enforce_capacity()
+}
+
+///|
+/// Inserts or updates every entry in `entries`, in order, under the
+/// same `ttl_ms` - equivalent to calling `set` on each pair in turn,
+/// right down to possibly evicting an earlier pair in `entries` itself
+/// to make room for a later one.
+///
+/// The usual reason to reach for this instead of a loop of `set` calls
+/// is a bulk warm-up or refresh - reloading a page of rows just read
+/// from a database, say - where every entry shares one `ttl_ms` and the
+/// loop itself is boilerplate every call site would otherwise repeat.
+pub fn[K : Hash + Eq, V] Larder::set_many(
+  self : Larder[K, V],
+  entries : Array[(K, V)],
+  now_ms~ : Int64,
+  ttl_ms? : Int64,
+) -> Unit {
+  for entry in entries {
+    self.set(entry.0, entry.1, now_ms~, ttl_ms?)
+  }
 }
 
 ///|
