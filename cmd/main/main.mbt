@@ -1,10 +1,11 @@
 ///|
 /// A runnable tour of `moonlarder`, covering LRU eviction, TTL expiry,
 /// memoization, weighted capacity, the LFU and ARC eviction policies,
-/// removal listeners, and JSON snapshotting. Every step uses an
-/// explicit `now_ms` rather than a real clock, on purpose: `Larder`
-/// never reads time on its own, so this program's behavior is exactly
-/// reproducible on every target `moon run cmd/main` can build for.
+/// the TinyLFU-style admission filter, removal listeners, and JSON
+/// snapshotting. Every step uses an explicit `now_ms` rather than a
+/// real clock, on purpose: `Larder` never reads time on its own, so
+/// this program's behavior is exactly reproducible on every target
+/// `moon run cmd/main` can build for.
 fn main {
   println(
     "moonlarder -- a generic in-memory cache with LRU/LFU/ARC eviction, TTL, and JSON snapshots",
@@ -16,6 +17,7 @@ fn main {
   demo_weighted()
   demo_lfu()
   demo_arc()
+  demo_admission_filter()
   demo_removal_listener()
   demo_json()
 }
@@ -190,6 +192,58 @@ fn demo_arc() -> Unit {
   let arc_text = @moonbitlang/core/debug.to_string(arc_survivors)
   println("  Lru  keeps of the hot set: \{lru_text}")
   println("  Arc  keeps of the hot set: \{arc_text}")
+}
+
+///|
+fn demo_admission_filter() -> Unit {
+  println(
+    "\n== Admission filter: a second, different defense against the same scan ==",
+  )
+  // Same shape of workload as the ARC demo above - a hot working set
+  // touched twice each, then a one-time scan - but this time the
+  // defense is a TinyLFU-style admission check layered on top of
+  // plain Lru, rather than an adaptive eviction policy: a newcomer
+  // that would evict a more historically popular entry is turned away
+  // outright instead of being let in.
+  let plain : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=5,
+  )
+  let filtered : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=5,
+    admission_filter=true,
+  )
+  fn workload(cache : @moonlarder.Larder[String, Int]) -> Unit {
+    for key in ["hot:1", "hot:2", "hot:3"] {
+      cache.set(key, 1, now_ms=0L)
+    }
+    ignore(cache.get("hot:1", now_ms=0L))
+    ignore(cache.get("hot:1", now_ms=0L))
+    ignore(cache.get("hot:2", now_ms=0L))
+    ignore(cache.get("hot:2", now_ms=0L))
+    for i = 0; i < 10; i = i + 1 {
+      cache.set("scan:\{i}", i, now_ms=0L)
+    }
+  }
+
+  workload(plain)
+  workload(filtered)
+  let plain_survivors = ["hot:1", "hot:2", "hot:3"].filter(fn(key) {
+    plain.contains(key, now_ms=0L)
+  })
+  let filtered_survivors = ["hot:1", "hot:2", "hot:3"].filter(fn(key) {
+    filtered.contains(key, now_ms=0L)
+  })
+  println(
+    "same scan as above, through a capacity-5 cache, on top of a hot set requested twice each just before it:",
+  )
+  let plain_text = @moonbitlang/core/debug.to_string(plain_survivors)
+  let filtered_text = @moonbitlang/core/debug.to_string(filtered_survivors)
+  let rejections = filtered.admission_rejections()
+  println("  plain Lru              keeps of the hot set: \{plain_text}")
+  println("  Lru + admission_filter keeps of the hot set: \{filtered_text}")
+  println(
+    "  admission_filter turned away \{rejections} of the 10 scan keys outright",
+  )
 }
 
 ///|

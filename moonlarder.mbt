@@ -94,6 +94,15 @@ pub struct Larder[K, V] {
   arc_b1 : Map[K, Unit]
   arc_b2 : Map[K, Unit]
   mut arc_p : Int
+  // TinyLFU-style admission filter (see `new`'s `admission_filter?`
+  // parameter): `Some` only when enabled, in which case `get` records
+  // every lookup in it and a `set` of a brand-new key that would
+  // require an eviction consults it first, rejecting the newcomer
+  // outright rather than evicting a more historically popular entry to
+  // make room for a less popular one. `None` (the default) costs
+  // nothing beyond the one field.
+  sketch : FrequencySketch[K]?
+  mut rejected_count : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int
@@ -169,6 +178,21 @@ pub extend Larder with @moonbitlang/core/debug.Debug::{to_repr}
 ///
 /// `policy` picks the eviction rule; it defaults to `Lru`.
 ///
+/// `admission_filter`, when `true`, runs a TinyLFU-style admission
+/// check (Einziger, Friedman, and Manes, ACM TOS 2017) in front of
+/// eviction: inserting a brand-new key that would require evicting an
+/// existing one first consults a `FrequencySketch` of every key
+/// `get()` has looked up (hit or miss) so far, and rejects the
+/// newcomer outright - leaving the cache unchanged - if it's estimated
+/// *less* popular than the entry it would have displaced. This is what
+/// protects a cache from a one-time bulk scan evicting a genuinely hot
+/// working set, the same failure mode `policy=Arc` addresses by a
+/// different mechanism. Only supported together with `policy=Lru` (or
+/// no `policy` at all, since that defaults to `Lru`) and without a
+/// custom `weigher` - `new` aborts if combined with `Lfu`/`Arc` or a
+/// `weigher`. See `admission_rejections()` to observe how often it
+/// fires.
+///
 /// `on_remove`, when given, is called synchronously every time an
 /// entry leaves the cache for any reason (see `RemovalCause`), after
 /// the cache's own state has already been updated to reflect the
@@ -180,6 +204,7 @@ pub fn[K : Hash + Eq, V] Larder::new(
   default_ttl_ms? : Int64,
   weigher? : (K, V) -> Int,
   policy? : EvictionPolicy,
+  admission_filter? : Bool,
   on_remove? : (K, V, RemovalCause) -> Unit,
 ) -> Larder[K, V] {
   guard capacity > 0 else {
@@ -191,6 +216,25 @@ pub fn[K : Hash + Eq, V] Larder::new(
   }
   guard !arc_with_weigher else {
     abort("Larder::new: the Arc policy doesn't support a custom weigher")
+  }
+  let filtered = match admission_filter {
+    Some(enabled) => enabled
+    None => false
+  }
+  let filter_needs_plain_lru = match policy {
+    None => false
+    Some(Lru) => false
+    Some(_) => true
+  }
+  guard !(filtered && filter_needs_plain_lru) else {
+    abort("Larder::new: admission_filter is only supported with policy=Lru")
+  }
+  let filter_with_weigher = match weigher {
+    Some(_) => filtered
+    None => false
+  }
+  guard !filter_with_weigher else {
+    abort("Larder::new: admission_filter doesn't support a custom weigher")
   }
   {
     table: {},
@@ -216,6 +260,12 @@ pub fn[K : Hash + Eq, V] Larder::new(
     arc_b1: {},
     arc_b2: {},
     arc_p: 0,
+    sketch: if filtered {
+      Some(FrequencySketch::new(capacity~))
+    } else {
+      None
+    },
+    rejected_count: 0,
     hit_count: 0,
     miss_count: 0,
     eviction_count: 0,
@@ -239,6 +289,7 @@ pub fn[K : Hash + Eq, V] Larder::from_array(
   default_ttl_ms? : Int64,
   weigher? : (K, V) -> Int,
   policy? : EvictionPolicy,
+  admission_filter? : Bool,
   on_remove? : (K, V, RemovalCause) -> Unit,
   now_ms~ : Int64,
 ) -> Larder[K, V] {
@@ -247,6 +298,7 @@ pub fn[K : Hash + Eq, V] Larder::from_array(
     default_ttl_ms?,
     weigher?,
     policy?,
+    admission_filter?,
     on_remove?,
   )
   for entry in entries {
@@ -612,11 +664,21 @@ fn[K : Hash + Eq, V] Larder::record_access(
 /// A hit refreshes the entry's recency; an expired entry is dropped from
 /// the cache as a side effect of the lookup (lazy expiry) and counted as
 /// both a miss and an expiration.
+///
+/// When `new` was given `admission_filter=true`, every call here - hit
+/// or miss alike - also records `key` in the admission filter's
+/// frequency sketch, since a key's *request* history (not just its
+/// time as a cache member) is what the filter judges a future
+/// newcomer's admission against.
 pub fn[K : Hash + Eq, V] Larder::get(
   self : Larder[K, V],
   key : K,
   now_ms~ : Int64,
 ) -> V? {
+  match self.sketch {
+    Some(sketch) => sketch.increment(key)
+    None => ()
+  }
   match self.table.get(key) {
     None => {
       self.miss_count += 1
@@ -789,14 +851,15 @@ pub impl[K : ToJson, V : ToJson] ToJson for Larder[K, V] with fn to_json(self) {
 /// the order they were written - the same eviction rules `from_array`
 /// follows if they don't all fit.
 ///
-/// Always uses the default (count-based) weigher, no default TTL, and
-/// no removal listener: a weigher and a listener are both functions,
-/// so there is nothing in JSON to deserialize them from, and remaining
-/// TTL is deliberately not round-tripped at all - a reloaded entry
-/// never expires on its own, rather than guessing what "remaining"
-/// should mean relative to a `now_ms` that belongs to a different call
-/// entirely. Use `to_array`/`from_array` directly, supplying your own
-/// `weigher`/`default_ttl_ms`/`on_remove`, if you need any of them.
+/// Always uses the default (count-based) weigher, no default TTL, no
+/// removal listener, and no admission filter: a weigher and a listener
+/// are both functions, so there is nothing in JSON to deserialize them
+/// from, and remaining TTL is deliberately not round-tripped at all -
+/// a reloaded entry never expires on its own, rather than guessing
+/// what "remaining" should mean relative to a `now_ms` that belongs to
+/// a different call entirely. Use `to_array`/`from_array` directly,
+/// supplying your own `weigher`/`default_ttl_ms`/`on_remove`/
+/// `admission_filter`, if you need any of them.
 pub impl[K : Hash + Eq + FromJson, V : FromJson] FromJson for Larder[K, V] with fn from_json(
   json,
   path,
@@ -876,6 +939,39 @@ pub extend Larder with @moonbitlang/core/json.FromJson::{from_json}
 /// `Replaced` and the value being discarded - the key itself isn't
 /// leaving the cache, but that old value is, and a listener tracking a
 /// resource tied to it (a file handle, say) needs to know.
+///
+/// When `new` was given `admission_filter=true` and inserting `key`
+/// (not already present, weighing `weight`) would require evicting an
+/// existing entry to make room, this is the TinyLFU admission check
+/// itself: reject `key` outright, leaving the cache untouched, unless
+/// it's estimated at least as popular as the entry `Lru` would have
+/// evicted (ties favor the newcomer, so a cold sketch - every key
+/// still at estimate 0 - doesn't degenerate into rejecting everything
+/// forever). `Larder::new`'s guard against combining `admission_filter`
+/// with anything but `Lru` is what lets this assume the eviction
+/// victim is always simply `table`'s first entry.
+fn[K : Hash, V] Larder::rejects_admission(
+  self : Larder[K, V],
+  key : K,
+  weight : Int,
+) -> Bool {
+  match self.sketch {
+    None => false
+    Some(sketch) =>
+      if self.current_weight + weight <= self.capacity || self.table.is_empty() {
+        false
+      } else {
+        let mut victim_freq = 0
+        for victim_key, _victim_slot in self.table {
+          victim_freq = sketch.estimate(victim_key)
+          break
+        }
+        sketch.estimate(key) < victim_freq
+      }
+  }
+}
+
+///|
 pub fn[K : Hash + Eq, V] Larder::set(
   self : Larder[K, V],
   key : K,
@@ -886,6 +982,10 @@ pub fn[K : Hash + Eq, V] Larder::set(
   let expire_at = self.resolve_expiry(now_ms, ttl_ms)
   let weight = (self.weigher)(key, value)
   match self.table.get(key) {
+    None if self.rejects_admission(key, weight) => {
+      self.rejected_count += 1
+      return
+    }
     Some(old_slot) => {
       self.current_weight -= old_slot.weight
       let freq = match self.policy {
@@ -1086,6 +1186,11 @@ pub fn[K, V] Larder::clear(self : Larder[K, V]) -> Unit {
   self.arc_b1.clear()
   self.arc_b2.clear()
   self.arc_p = 0
+  match self.sketch {
+    Some(sketch) => sketch.clear()
+    None => ()
+  }
+  self.rejected_count = 0
   self.hit_count = 0
   self.miss_count = 0
   self.eviction_count = 0
@@ -1170,6 +1275,15 @@ pub fn[K, V] Larder::weight(self : Larder[K, V]) -> Int {
 /// This cache's eviction policy, as given to `new`.
 pub fn[K, V] Larder::policy(self : Larder[K, V]) -> EvictionPolicy {
   self.policy
+}
+
+///|
+/// How many `set()` calls on a new key have been turned away by the
+/// admission filter (see `new`'s `admission_filter?` parameter) since
+/// this cache was created or last `clear()`ed. Always `0` when the
+/// filter isn't enabled.
+pub fn[K, V] Larder::admission_rejections(self : Larder[K, V]) -> Int {
+  self.rejected_count
 }
 
 ///|

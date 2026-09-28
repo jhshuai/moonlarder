@@ -17,9 +17,9 @@ moon run cmd/main --target wasm-gc
 ```
 
 `cmd/main` is a runnable tour of LRU eviction, TTL expiry, memoization,
-weighted capacity, the LFU and ARC policies, and JSON snapshotting -
-each step
-prints what it did and why. It uses an explicit `now_ms` throughout
+weighted capacity, the LFU and ARC policies, the admission filter, and
+JSON snapshotting - each step prints what it did and why. It uses an
+explicit `now_ms` throughout
 rather than a real clock (the same as everything else in this
 library), so its output is identical on every target: swap `wasm-gc`
 for `wasm`, `js`, or `native` (the last needs a C compiler on `PATH`,
@@ -151,6 +151,32 @@ the trade against an exact `Map[K, Int]` - and counts are capped and
 periodically halved so `estimate` tracks *recent* popularity rather
 than accumulating forever.
 
+`Larder::new`'s `admission_filter=true` puts a `FrequencySketch` to
+work as a TinyLFU-style admission check (Einziger, Friedman, and
+Manes, ACM TOS 2017) in front of `Lru` eviction - a second, different
+defense against the same one-time-scan problem `policy=Arc` solves:
+
+```moonbit nocheck
+let cache : Larder[String, Int] = Larder::new(capacity=100, admission_filter=true)
+```
+
+Every `get()` (hit or miss) records the key it looked up in the
+filter's sketch. When a brand-new key would need to evict an existing
+entry to fit, that eviction happens only if the newcomer is estimated
+*at least as* popular as the entry it would displace - otherwise the
+newcomer is turned away outright and the cache is left exactly as it
+was (`admission_rejections()` counts how often this fires). This is
+what keeps a one-time bulk scan from wiping out a genuinely
+frequently-requested working set: the scan's keys have no request
+history, so they lose the comparison against anything that's actually
+been asked for more than once.
+
+`admission_filter` is only supported together with `policy=Lru` (the
+default) and without a custom `weigher` - `new` aborts if combined
+with `Lfu`/`Arc` or a `weigher`. `cmd/main` runs the same
+hot-set-plus-scan workload as the `Arc` demo through both a plain
+`Lru` cache and an admission-filtered one, side by side.
+
 `Larder[K, V]` implements `ToJson`/`FromJson` when `K`/`V` do, for
 persisting and rehydrating a cache across a restart:
 
@@ -164,10 +190,12 @@ The snapshot is `{"capacity": .., "policy": "lru"|"lfu"|"arc", "entries":
 byte-for-byte save state: LRU recency order, LFU frequencies, ARC's
 T1/T2/ghost-list state, and TTLs don't survive the round trip (a
 reloaded entry never expires on its
-own, and `FromJson` always uses the default count-based weigher, since
-a weigher is a function and there's nothing in JSON to deserialize it
-from). Use `to_array`/`from_array` directly, supplying your own
-`weigher`/`default_ttl_ms`, if you need either preserved.
+own, and `FromJson` always uses the default count-based weigher and
+leaves the admission filter off, since a weigher is a function and
+there's nothing in JSON to deserialize a filter's sketch state from
+either). Use `to_array`/`from_array` directly, supplying your own
+`weigher`/`default_ttl_ms`/`admission_filter`, if you need any of them
+preserved.
 
 Pass `on_remove` to be notified whenever an entry leaves the cache, and
 why - useful for cascading invalidation, releasing a resource tied to
@@ -190,9 +218,9 @@ seeing a half-finished removal.
 
 ## API
 
-- `Larder::new(capacity~, default_ttl_ms?, weigher?, policy?, on_remove?)`
+- `Larder::new(capacity~, default_ttl_ms?, weigher?, policy?, admission_filter?, on_remove?)`
   — create a cache
-- `Larder::from_array(entries, capacity~, default_ttl_ms?, weigher?, policy?, on_remove?, now_ms~)`
+- `Larder::from_array(entries, capacity~, default_ttl_ms?, weigher?, policy?, admission_filter?, on_remove?, now_ms~)`
   — build a cache from an array in one call, as if `set` had been called
   for each entry in order
 - `get(key, now_ms~)` — look up a value, refreshing its recency on a hit
@@ -216,6 +244,8 @@ seeing a half-finished removal.
   `for key, value in larder { .. }` directly
 - `is_empty()` / `size()` / `capacity()` / `weight()` / `resize(capacity)`
 - `policy()` — the eviction policy this cache was created with
+- `admission_rejections()` — how many newcomers `admission_filter` has
+  turned away; always `0` when it isn't enabled
 - `stats()` — hit/miss/eviction/expiration counters
 - `on_remove` — notified synchronously whenever an entry leaves, with
   why (`Explicit`, `Replaced`, `Expired`, or `Evicted`); see below
@@ -253,6 +283,11 @@ random sequence might take a while to stumble onto reliably.
 for `FrequencySketch`, against a naive exact `Map[K, Int]` of true
 counts: `estimate(key)` must never fall below `key`'s true count (up
 to the sketch's own cap), the defining Count-Min Sketch guarantee.
+`admission_filter` gets its own capacity-invariant property (a
+rejected insert must leave the cache exactly as it was) plus
+hand-picked unit tests for the admission decision itself - both the
+rejection case and the "a tie favors the newcomer" rule that keeps a
+cold sketch from degenerating into rejecting every insert.
 
 ## Benchmarks
 

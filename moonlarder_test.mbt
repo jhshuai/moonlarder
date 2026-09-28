@@ -829,6 +829,101 @@ test "Arc composes with removal listeners and a resize, cleaning up T1/T2 either
 }
 
 ///|
+test "panic Larder::new aborts if admission_filter is combined with policy=Lfu" {
+  let _ : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=Lfu,
+    admission_filter=true,
+  )
+}
+
+///|
+test "panic Larder::new aborts if admission_filter is combined with policy=Arc" {
+  let _ : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=Arc,
+    admission_filter=true,
+  )
+}
+
+///|
+test "panic Larder::new aborts if admission_filter is combined with a weigher" {
+  let _ : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    admission_filter=true,
+    weigher=fn(_key, _value) { 1 },
+  )
+}
+
+///|
+test "admission_filter admits freely while the cache isn't yet full" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=5,
+    policy=Lru,
+    admission_filter=true,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.size(), 3)
+  assert_eq(c.admission_rejections(), 0)
+}
+
+///|
+test "admission_filter rejects a newcomer estimated less popular than the entry it would evict" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    admission_filter=true,
+  )
+  c.set("a", 1, now_ms=0L)
+  ignore(c.get("a", now_ms=0L))
+  ignore(c.get("a", now_ms=0L)) // "a" now has an established request history
+  c.set("b", 2, now_ms=0L) // fits exactly, no eviction needed yet
+  // "c" has never been requested before, so it's estimated less popular
+  // than "a" (the entry Lru would otherwise evict) and gets turned away.
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), None)
+  assert_eq(c.size(), 2)
+  assert_eq(c.admission_rejections(), 1)
+}
+
+///|
+test "admission_filter admits a newcomer that ties the victim's estimate, instead of rejecting everything on a cold sketch" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    admission_filter=true,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L) // neither "a" nor "b" has ever been get() - both estimate 0
+  // "c" also estimates 0: a tie against "a" (the Lru victim), which
+  // admits rather than rejects - otherwise a cache with an unused
+  // sketch could never accept a single new key past capacity.
+  c.set("c", 3, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), None) // evicted, same as plain Lru would
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.admission_rejections(), 0)
+}
+
+///|
+test "clear resets admission_rejections()" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    admission_filter=true,
+  )
+  c.set("a", 1, now_ms=0L)
+  ignore(c.get("a", now_ms=0L))
+  ignore(c.get("a", now_ms=0L))
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L) // rejected, same scenario as above
+  assert_eq(c.admission_rejections(), 1)
+  c.clear()
+  assert_eq(c.admission_rejections(), 0)
+}
+
+///|
 test "to_json produces the documented shape" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
     capacity=10,

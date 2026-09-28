@@ -51,15 +51,18 @@ pub struct Larder[K, V] {
   arc_b1 : Map[K, Unit]
   arc_b2 : Map[K, Unit]
   mut arc_p : Int
+  sketch : FrequencySketch[K]?
+  mut rejected_count : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int
   mut expiration_count : Int
 }
+pub fn[K, V] Larder::admission_rejections(Self[K, V]) -> Int
 pub fn[K, V] Larder::capacity(Self[K, V]) -> Int
 pub fn[K, V] Larder::clear(Self[K, V]) -> Unit
 pub fn[K : Hash + Eq, V] Larder::contains(Self[K, V], K, now_ms~ : Int64) -> Bool
-pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, on_remove? : (K, V, RemovalCause) -> Unit, now_ms~ : Int64) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, admission_filter? : Bool, on_remove? : (K, V, RemovalCause) -> Unit, now_ms~ : Int64) -> Self[K, V]
 pub fn[K : Hash + Eq + @json.FromJson, V : @json.FromJson] Larder::from_json(Json, @json.JsonPath) -> Self[K, V] raise @json.JsonDecodeError
 pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::get_many(Self[K, V], Array[K], now_ms~ : Int64) -> Array[(K, V)]
@@ -68,7 +71,7 @@ pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool
 pub fn[K, V] Larder::iter(Self[K, V]) -> Iter[(K, V)]
 pub fn[K, V] Larder::iter2(Self[K, V]) -> Iter2[K, V]
 pub fn[K, V] Larder::keys(Self[K, V]) -> Iter[K]
-pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, on_remove? : (K, V, RemovalCause) -> Unit) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, admission_filter? : Bool, on_remove? : (K, V, RemovalCause) -> Unit) -> Self[K, V]
 pub fn[K, V] Larder::output(Self[K, V], &Logger) -> Unit
 pub fn[K : Hash + Eq, V] Larder::peek(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K, V] Larder::policy(Self[K, V]) -> EvictionPolicy

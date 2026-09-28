@@ -326,6 +326,34 @@ fn prop_arc_on_remove_counts_match_stats(ops : Array[(Int, Int, Int)]) -> Bool {
 }
 
 ///|
+/// Same invariant as `prop_capacity_is_never_exceeded`, under
+/// `admission_filter=true` - a rejected insert must leave the cache
+/// exactly as it was, never partially applied.
+fn prop_admission_filter_capacity_is_never_exceeded(
+  ops : Array[(Int, Int, Int)],
+) -> Bool {
+  let capacity = 5
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    admission_filter=true,
+  )
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 4 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      2 => ignore(cache.remove(key))
+      _ => ignore(cache.retain(fn(k, _v) { k != key }))
+    }
+    if cache.size() > cache.capacity() {
+      return false
+    }
+  }
+  true
+}
+
+///|
 /// Every entry `to_array` reports present must actually be gettable
 /// (via `peek`, so the check itself doesn't disturb recency) with the
 /// exact value `to_array` reported.
@@ -472,4 +500,9 @@ test "property: Arc's to_array always agrees with peek" {
 ///|
 test "property: Arc's on_remove firing counts match stats() exactly" {
   @quickcheck.quick_check_fn(prop_arc_on_remove_counts_match_stats)
+}
+
+///|
+test "property: admission_filter never lets the cache exceed capacity, rejected or not" {
+  @quickcheck.quick_check_fn(prop_admission_filter_capacity_is_never_exceeded)
 }

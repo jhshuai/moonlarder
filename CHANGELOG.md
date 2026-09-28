@@ -6,6 +6,34 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.12.0]
+
+### Added
+
+- `Larder::new`'s `admission_filter?` parameter: a TinyLFU-style
+  admission check (Einziger, Friedman, and Manes, ACM TOS 2017) that
+  puts the new `FrequencySketch` to work in front of `Lru` eviction.
+  Every `get()` records the key it looked up (hit or miss); when a
+  brand-new key would need to evict an existing entry to fit, the
+  eviction only happens if the newcomer is estimated at least as
+  popular as the entry it would displace, otherwise the newcomer is
+  turned away and the cache is left exactly as it was. A second,
+  differently-mechanised defense against the same one-time-scan
+  problem `policy=Arc` solves - a scan's keys have no request history,
+  so they lose the comparison against anything genuinely
+  frequently-requested. Only supported together with `policy=Lru` and
+  without a custom `weigher` - `new` aborts if combined with
+  `Lfu`/`Arc` or a `weigher`.
+- `admission_rejections()` - how many newcomers the filter has turned
+  away; always `0` when it isn't enabled.
+- `cmd/main` runs the same hot-set-plus-scan workload as the `Arc` demo
+  through a plain `Lru` cache and an admission-filtered one side by
+  side.
+- A new quickcheck property (capacity never exceeded by a rejected
+  insert) and hand-picked unit tests for the admission decision itself,
+  including the "a tie favors the newcomer" rule that keeps a cold
+  sketch from rejecting every insert.
+
 ## [0.11.0]
 
 ### Added
