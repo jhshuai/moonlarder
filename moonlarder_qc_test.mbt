@@ -303,6 +303,44 @@ fn prop_json_round_trip_preserves_contents(
 }
 
 ///|
+/// `on_remove`'s Evicted/Expired firing counts must exactly match
+/// `stats()`'s own evictions/expirations counters - two independent
+/// bookkeeping mechanisms (a counter incremented in `discard`'s
+/// callers, and a listener fired from `discard` itself) over the same
+/// sequence of removals, which should never be able to disagree.
+fn prop_on_remove_counts_match_stats(ops : Array[(Int, Int, Int)]) -> Bool {
+  let capacity = 5
+  let evicted = [0]
+  let expired = [0]
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    on_remove=fn(_key, _value, cause) {
+      match cause {
+        Evicted => evicted[0] = evicted[0] + 1
+        Expired => expired[0] = expired[0] + 1
+        _ => ()
+      }
+    },
+  )
+  let mut now = 0L
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    now += 1L
+    match kind % 6 {
+      0 => ignore(cache.get(key, now_ms=now))
+      1 => cache.set(key, value, now_ms=now)
+      2 => cache.set(key, value, now_ms=now, ttl_ms=3L)
+      3 => ignore(cache.remove(key))
+      4 => ignore(cache.retain(fn(k, _v) { k != key }))
+      _ => ignore(cache.purge_expired(now_ms=now))
+    }
+  }
+  evicted[0] == cache.stats().evictions &&
+  expired[0] == cache.stats().expirations
+}
+
+///|
 test "property: LRU matches an independent naive reference model" {
   @quickcheck.quick_check_fn(prop_lru_matches_naive_model)
 }
@@ -325,4 +363,9 @@ test "property: to_array's report always agrees with peek" {
 ///|
 test "property: a JSON round trip preserves every live entry" {
   @quickcheck.quick_check_fn(prop_json_round_trip_preserves_contents)
+}
+
+///|
+test "property: on_remove firing counts match stats() exactly" {
+  @quickcheck.quick_check_fn(prop_on_remove_counts_match_stats)
 }

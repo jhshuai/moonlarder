@@ -19,6 +19,28 @@ pub extend EvictionPolicy with Eq::{not_equal, equal}
 pub extend EvictionPolicy with @moonbitlang/core/debug.Debug::{to_repr}
 
 ///|
+/// Why an entry left the cache, passed to `new`'s `on_remove` listener.
+pub(all) enum RemovalCause {
+  /// Removed by `remove()`, or dropped by `retain()`'s predicate, or
+  /// swept out individually by `clear()`.
+  Explicit
+  /// Overwritten by `set()` on a key that was already present. Carries
+  /// the value being replaced, not the new one.
+  Replaced
+  /// Dropped for being past its time-to-live, whether discovered lazily
+  /// (`get`/`contains`/`touch_ttl`) or by an explicit `purge_expired`.
+  Expired
+  /// Dropped by LRU or LFU eviction under capacity/weight pressure.
+  Evicted
+} derive(Eq, Debug)
+
+///|
+pub extend RemovalCause with Eq::{not_equal, equal}
+
+///|
+pub extend RemovalCause with @moonbitlang/core/debug.Debug::{to_repr}
+
+///|
 /// A bounded, expiring in-memory cache.
 ///
 /// Entries beyond `capacity` are evicted according to `policy` once
@@ -33,12 +55,18 @@ pub extend EvictionPolicy with @moonbitlang/core/debug.Debug::{to_repr}
 /// byte size, say, for a cache of blobs where a handful of large ones
 /// shouldn't crowd out many small ones the way plain entry-counting
 /// would let them.
+///
+/// Pass `on_remove` to `new` to be notified whenever an entry leaves
+/// the cache, with the reason - useful for cascading invalidation,
+/// releasing a resource tied to the value (a file handle, say), or
+/// just metrics.
 pub struct Larder[K, V] {
   table : Map[K, Slot[V]]
   policy : EvictionPolicy
   mut capacity : Int
   default_ttl_ms : Int64?
   weigher : (K, V) -> Int
+  on_remove : (K, V, RemovalCause) -> Unit
   mut current_weight : Int
   // LFU bookkeeping: freq_buckets[f] is the set of keys currently at
   // frequency f, and min_freq is the lowest frequency with a non-empty
@@ -118,11 +146,19 @@ pub extend Larder with @moonbitlang/core/debug.Debug::{to_repr}
 /// rejected, since `set` never fails.
 ///
 /// `policy` picks the eviction rule; it defaults to `Lru`.
+///
+/// `on_remove`, when given, is called synchronously every time an
+/// entry leaves the cache for any reason (see `RemovalCause`), after
+/// the cache's own state has already been updated to reflect the
+/// removal - so a listener that calls back into the cache (`size()`,
+/// `get()`, even inserting a replacement) sees consistent state, not a
+/// half-finished removal.
 pub fn[K : Hash + Eq, V] Larder::new(
   capacity~ : Int,
   default_ttl_ms? : Int64,
   weigher? : (K, V) -> Int,
   policy? : EvictionPolicy,
+  on_remove? : (K, V, RemovalCause) -> Unit,
 ) -> Larder[K, V] {
   guard capacity > 0 else {
     abort("Larder::new: capacity must be positive, got \{capacity}")
@@ -138,6 +174,10 @@ pub fn[K : Hash + Eq, V] Larder::new(
     weigher: match weigher {
       Some(weigher) => weigher
       None => fn(_key, _value) { 1 }
+    },
+    on_remove: match on_remove {
+      Some(on_remove) => on_remove
+      None => fn(_key, _value, _cause) { () }
     },
     current_weight: 0,
     freq_buckets: {},
@@ -165,9 +205,16 @@ pub fn[K : Hash + Eq, V] Larder::from_array(
   default_ttl_ms? : Int64,
   weigher? : (K, V) -> Int,
   policy? : EvictionPolicy,
+  on_remove? : (K, V, RemovalCause) -> Unit,
   now_ms~ : Int64,
 ) -> Larder[K, V] {
-  let cache = Larder::new(capacity~, default_ttl_ms?, weigher?, policy?)
+  let cache = Larder::new(
+    capacity~,
+    default_ttl_ms?,
+    weigher?,
+    policy?,
+    on_remove?,
+  )
   for entry in entries {
     cache.set(entry.0, entry.1, now_ms~)
   }
@@ -280,12 +327,33 @@ fn[K : Hash + Eq, V] Larder::lfu_forget(
 }
 
 ///|
+/// Removes `key` from every internal structure it's tracked in
+/// (`table`, `freq_buckets` under `Lfu`, `current_weight`) and fires
+/// `on_remove` with `cause` - the one place every full removal funnels
+/// through (an in-place value replacement in `set` is the one
+/// exception, since the key isn't leaving), so `on_remove`'s "state is
+/// already consistent" contract only has to be upheld here.
+fn[K : Hash + Eq, V] Larder::discard(
+  self : Larder[K, V],
+  key : K,
+  slot : Slot[V],
+  cause : RemovalCause,
+) -> Unit {
+  self.table.remove(key)
+  self.current_weight -= slot.weight
+  match self.policy {
+    Lru => ()
+    Lfu => self.lfu_forget(key, slot.freq)
+  }
+  (self.on_remove)(key, slot.value, cause)
+}
+
+///|
 /// Evicts the least-recently-used entry, if any, without touching stats
 /// other than `eviction_count`.
 fn[K : Hash + Eq, V] Larder::evict_lru(self : Larder[K, V]) -> Unit {
   for key, slot in self.table {
-    self.table.remove(key)
-    self.current_weight -= slot.weight
+    self.discard(key, slot, Evicted)
     self.eviction_count += 1
     break
   }
@@ -309,6 +377,7 @@ fn[K : Hash + Eq, V] Larder::evict_lfu(self : Larder[K, V]) -> Unit {
       Some(slot) => {
         self.table.remove(key)
         self.current_weight -= slot.weight
+        (self.on_remove)(key, slot.value, Evicted)
       }
       None => ()
     }
@@ -344,13 +413,8 @@ fn[K : Hash + Eq, V] Larder::drop_expired(
   key : K,
   slot : Slot[V],
 ) -> Unit {
-  self.table.remove(key)
-  self.current_weight -= slot.weight
+  self.discard(key, slot, Expired)
   self.expiration_count += 1
-  match self.policy {
-    Lru => ()
-    Lfu => self.lfu_forget(key, slot.freq)
-  }
 }
 
 ///|
@@ -537,14 +601,14 @@ pub impl[K : ToJson, V : ToJson] ToJson for Larder[K, V] with fn to_json(self) {
 /// the order they were written - the same eviction rules `from_array`
 /// follows if they don't all fit.
 ///
-/// Always uses the default (count-based) weigher and no default TTL:
-/// a weigher is a function, so there is nothing in JSON to deserialize
-/// it from, and remaining TTL is deliberately not round-tripped at all
-/// - a reloaded entry never expires on its own, rather than guessing
-/// what "remaining" should mean relative to a `now_ms` that belongs to
-/// a different call entirely. Use `to_array`/`from_array` directly,
-/// supplying your own `weigher`/`default_ttl_ms`, if you need either
-/// preserved.
+/// Always uses the default (count-based) weigher, no default TTL, and
+/// no removal listener: a weigher and a listener are both functions,
+/// so there is nothing in JSON to deserialize them from, and remaining
+/// TTL is deliberately not round-tripped at all - a reloaded entry
+/// never expires on its own, rather than guessing what "remaining"
+/// should mean relative to a `now_ms` that belongs to a different call
+/// entirely. Use `to_array`/`from_array` directly, supplying your own
+/// `weigher`/`default_ttl_ms`/`on_remove`, if you need any of them.
 pub impl[K : Hash + Eq + FromJson, V : FromJson] FromJson for Larder[K, V] with fn from_json(
   json,
   path,
@@ -618,6 +682,11 @@ pub extend Larder with @moonbitlang/core/json.FromJson::{from_json}
 /// entries are evicted per `policy` (which may include the one just
 /// inserted, if it doesn't fit even alone) until it fits or only one
 /// entry remains.
+///
+/// Overwriting an already-present key fires `on_remove` with
+/// `Replaced` and the value being discarded - the key itself isn't
+/// leaving the cache, but that old value is, and a listener tracking a
+/// resource tied to it (a file handle, say) needs to know.
 pub fn[K : Hash + Eq, V] Larder::set(
   self : Larder[K, V],
   key : K,
@@ -639,6 +708,7 @@ pub fn[K : Hash + Eq, V] Larder::set(
         Lru => self.touch(key, new_slot)
         Lfu => self.table.set(key, new_slot)
       }
+      (self.on_remove)(key, old_slot.value, Replaced)
     }
     None => {
       self.table.set(key, { value, expire_at, weight, freq: 1, })
@@ -750,21 +820,24 @@ pub fn[K : Hash + Eq, V] Larder::remove(self : Larder[K, V], key : K) -> V? {
   match self.table.get(key) {
     None => None
     Some(slot) => {
-      self.table.remove(key)
-      self.current_weight -= slot.weight
-      match self.policy {
-        Lru => ()
-        Lfu => self.lfu_forget(key, slot.freq)
-      }
-      Some(slot.value)
+      let value = slot.value
+      self.discard(key, slot, Explicit)
+      Some(value)
     }
   }
 }
 
 ///|
-/// Removes every entry and resets the hit/miss/eviction/expiration
+/// Removes every entry (firing `on_remove` with `Explicit` for each,
+/// once the cache is already empty - the same "state is consistent
+/// first" order `new`'s `on_remove` doc comment promises for every
+/// other removal path) and resets the hit/miss/eviction/expiration
 /// counters to zero.
 pub fn[K, V] Larder::clear(self : Larder[K, V]) -> Unit {
+  let removed = []
+  for key, slot in self.table {
+    removed.push((key, slot.value))
+  }
   self.table.clear()
   self.current_weight = 0
   self.freq_buckets.clear()
@@ -773,6 +846,9 @@ pub fn[K, V] Larder::clear(self : Larder[K, V]) -> Unit {
   self.miss_count = 0
   self.eviction_count = 0
   self.expiration_count = 0
+  for entry in removed {
+    (self.on_remove)(entry.0, entry.1, Explicit)
+  }
 }
 
 ///|
@@ -790,16 +866,11 @@ pub fn[K : Hash + Eq, V] Larder::retain(
   let dropped = []
   for key, slot in self.table {
     if !predicate(key, slot.value) {
-      dropped.push((key, slot.weight, slot.freq))
+      dropped.push((key, slot))
     }
   }
   for entry in dropped {
-    self.table.remove(entry.0)
-    self.current_weight -= entry.1
-    match self.policy {
-      Lru => ()
-      Lfu => self.lfu_forget(entry.0, entry.2)
-    }
+    self.discard(entry.0, entry.1, Explicit)
   }
   dropped.length()
 }
@@ -819,17 +890,11 @@ pub fn[K : Hash + Eq, V] Larder::purge_expired(
   let expired = []
   for key, slot in self.table {
     if slot.is_expired(now_ms) {
-      expired.push((key, slot.weight, slot.freq))
+      expired.push((key, slot))
     }
   }
   for entry in expired {
-    self.table.remove(entry.0)
-    self.current_weight -= entry.1
-    self.expiration_count += 1
-    match self.policy {
-      Lru => ()
-      Lfu => self.lfu_forget(entry.0, entry.2)
-    }
+    self.drop_expired(entry.0, entry.1)
   }
   expired.length()
 }

@@ -799,3 +799,148 @@ test "from_json rejects malformed input" {
     _ => ()
   }
 }
+
+///|
+test "on_remove fires with Explicit when remove() takes a key" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L)
+  ignore(c.remove("a"))
+  assert_eq(events, [("a", 1, Explicit)])
+}
+
+///|
+test "on_remove does not fire for a plain new-key insert" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L)
+  assert_eq(events, [])
+}
+
+///|
+test "on_remove fires with Replaced, carrying the old value, on overwrite" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("a", 2, now_ms=0L)
+  assert_eq(events, [("a", 1, Replaced)])
+  assert_eq(c.get("a", now_ms=0L), Some(2))
+}
+
+///|
+test "on_remove fires with Evicted under Lru capacity pressure" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L) // evicts "a"
+  assert_eq(events, [("a", 1, Evicted)])
+}
+
+///|
+test "on_remove fires with Evicted under Lfu frequency pressure" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    policy=Lfu,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  ignore(c.get("a", now_ms=0L)) // "a" -> frequency 2
+  c.set("c", 3, now_ms=0L) // "b" (frequency 1) is the least-frequently-used
+  assert_eq(events, [("b", 2, Evicted)])
+}
+
+///|
+test "on_remove fires with Expired when get() finds a stale entry" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L, ttl_ms=5L)
+  assert_eq(c.get("a", now_ms=5L), None)
+  assert_eq(events, [("a", 1, Expired)])
+}
+
+///|
+test "on_remove fires with Expired when touch_ttl finds a stale entry" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L, ttl_ms=5L)
+  assert_false(c.touch_ttl("a", now_ms=5L))
+  assert_eq(events, [("a", 1, Expired)])
+}
+
+///|
+test "on_remove fires with Expired for each entry purge_expired removes" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=4,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("a", 1, now_ms=0L, ttl_ms=5L)
+  c.set("b", 2, now_ms=0L, ttl_ms=100L)
+  assert_eq(c.purge_expired(now_ms=10L), 1)
+  assert_eq(events, [("a", 1, Expired)])
+}
+
+///|
+test "on_remove fires with Explicit for each entry retain drops" {
+  let events = []
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=4,
+    on_remove=fn(key, value, cause) { events.push((key, value, cause)) },
+  )
+  c.set("keep", 1, now_ms=0L)
+  c.set("drop", 2, now_ms=0L)
+  ignore(c.retain(fn(key, _value) { key == "keep" }))
+  assert_eq(events, [("drop", 2, Explicit)])
+}
+
+///|
+test "on_remove fires with Explicit for every entry on clear, after the cache is already empty" {
+  let events = []
+  let sizes_seen_by_listener = []
+  // on_remove is set at construction time, so it can't literally
+  // capture `c` yet; this box lets the closure read the real cache
+  // once construction has finished, by which point every call the
+  // closure actually makes happens well after that assignment.
+  let cache_box : Array[@moonlarder.Larder[String, Int]?] = [None]
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=4,
+    on_remove=fn(key, value, cause) {
+      events.push((key, value, cause))
+      match cache_box[0] {
+        Some(cache) => sizes_seen_by_listener.push(cache.size())
+        None => ()
+      }
+    },
+  )
+  cache_box[0] = Some(c)
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.clear()
+  assert_eq(events.length(), 2)
+  assert_true(events.contains(("a", 1, Explicit)))
+  assert_true(events.contains(("b", 2, Explicit)))
+  // the cache was already empty by the time either listener call ran -
+  // clear()'s own "state is consistent first" contract
+  assert_eq(sizes_seen_by_listener, [0, 0])
+}

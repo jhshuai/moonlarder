@@ -108,11 +108,30 @@ a weigher is a function and there's nothing in JSON to deserialize it
 from). Use `to_array`/`from_array` directly, supplying your own
 `weigher`/`default_ttl_ms`, if you need either preserved.
 
+Pass `on_remove` to be notified whenever an entry leaves the cache, and
+why - useful for cascading invalidation, releasing a resource tied to
+the value (closing a file handle, say), or metrics:
+
+```moonbit nocheck
+let cache : Larder[String, Handle] = Larder::new(
+  capacity=1000,
+  on_remove=fn(_key, handle, _cause) { handle.close() },
+)
+```
+
+`_cause` is `Explicit` (`remove`/`retain`/`clear`), `Replaced`
+(overwritten by `set` on a key already present - the *old* value is
+what's being discarded, not the new one), `Expired`, or `Evicted`.
+The listener runs synchronously, after the cache's own state already
+reflects the removal - so it's safe for a listener to call back into
+the same cache (check `size()`, even insert a replacement) without
+seeing a half-finished removal.
+
 ## API
 
-- `Larder::new(capacity~, default_ttl_ms?, weigher?, policy?)` — create a
-  cache
-- `Larder::from_array(entries, capacity~, default_ttl_ms?, weigher?, policy?, now_ms~)`
+- `Larder::new(capacity~, default_ttl_ms?, weigher?, policy?, on_remove?)`
+  — create a cache
+- `Larder::from_array(entries, capacity~, default_ttl_ms?, weigher?, policy?, on_remove?, now_ms~)`
   — build a cache from an array in one call, as if `set` had been called
   for each entry in order
 - `get(key, now_ms~)` — look up a value, refreshing its recency on a hit
@@ -133,6 +152,8 @@ from). Use `to_array`/`from_array` directly, supplying your own
 - `is_empty()` / `size()` / `capacity()` / `weight()` / `resize(capacity)`
 - `policy()` — the eviction policy this cache was created with
 - `stats()` — hit/miss/eviction/expiration counters
+- `on_remove` — notified synchronously whenever an entry leaves, with
+  why (`Explicit`, `Replaced`, `Expired`, or `Evicted`); see below
 - `ToJson`/`FromJson` — snapshot to and rehydrate from JSON (see above)
 
 See `pkg.generated.mbti` for the full signature list.

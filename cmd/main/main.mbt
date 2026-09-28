@@ -1,10 +1,10 @@
 ///|
 /// A runnable tour of `moonlarder`, covering LRU eviction, TTL expiry,
-/// memoization, weighted capacity, the LFU eviction policy, and JSON
-/// snapshotting. Every step uses an explicit `now_ms` rather than a
-/// real clock, on purpose: `Larder` never reads time on its own, so
-/// this program's behavior is exactly reproducible on every target
-/// `moon run cmd/main` can build for.
+/// memoization, weighted capacity, the LFU eviction policy, removal
+/// listeners, and JSON snapshotting. Every step uses an explicit
+/// `now_ms` rather than a real clock, on purpose: `Larder` never reads
+/// time on its own, so this program's behavior is exactly reproducible
+/// on every target `moon run cmd/main` can build for.
 fn main {
   println(
     "moonlarder -- a generic in-memory cache with LRU/LFU eviction, TTL, and JSON snapshots",
@@ -14,6 +14,7 @@ fn main {
   demo_memoize()
   demo_weighted()
   demo_lfu()
+  demo_removal_listener()
   demo_json()
 }
 
@@ -130,6 +131,32 @@ fn demo_lfu() -> Unit {
   println(
     "\"popular\" survives on frequency alone: get(\"popular\") = \{popular}",
   )
+}
+
+///|
+fn demo_removal_listener() -> Unit {
+  println("\n== Removal listener ==")
+  // Simulates a resource tied to each cached value - a connection
+  // handle, say - that needs to be released whenever its entry
+  // leaves, no matter why.
+  let closed = []
+  let cache : @moonlarder.Larder[String, String] = @moonlarder.Larder::new(
+    capacity=2,
+    on_remove=fn(key, _value, cause) {
+      let cause_text = @moonbitlang/core/debug.to_string(cause)
+      println("  on_remove: \"\{key}\" (\{cause_text})")
+      closed.push(key)
+    },
+  )
+  cache.set("conn-a", "handle-a", now_ms=0L)
+  cache.set("conn-b", "handle-b", now_ms=0L)
+  println("inserted conn-a, conn-b (capacity 2, no evictions yet)")
+  cache.set("conn-a", "handle-a-2", now_ms=0L) // fires Replaced
+  println("re-set conn-a with a new handle -- old one needs closing:")
+  cache.set("conn-c", "handle-c", now_ms=0L) // evicts conn-b: fires Evicted
+  println("inserted conn-c, over capacity -- least-recently-used gets evicted:")
+  let closed_text = @moonbitlang/core/debug.to_string(closed)
+  println("closed so far, in order: \{closed_text}")
 }
 
 ///|

@@ -6,6 +6,23 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.8.0]
+
+### Added
+
+- Removal listeners: `Larder::new`'s new `on_remove?` parameter is
+  called synchronously whenever an entry leaves the cache, with a
+  `RemovalCause` (`Explicit`, `Replaced`, `Expired`, or `Evicted`).
+  Fired after the cache's own state already reflects the removal, so a
+  listener can safely call back into the same cache. `from_array`
+  gained the same `on_remove?` parameter; `from_json` always uses the
+  default no-op listener, for the same reason it can't deserialize a
+  custom `weigher` (both are functions).
+- A new quickcheck property (`on_remove firing counts match stats()
+  exactly`) cross-checks the listener against the existing, separately
+  maintained hit/miss/eviction/expiration counters over random
+  operation sequences.
+
 ## [0.7.0]
 
 ### Added

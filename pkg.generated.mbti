@@ -25,6 +25,7 @@ pub struct Larder[K, V] {
   mut capacity : Int
   default_ttl_ms : Int64?
   weigher : (K, V) -> Int
+  on_remove : (K, V, RemovalCause) -> Unit
   mut current_weight : Int
   freq_buckets : Map[Int, Map[K, Unit]]
   mut min_freq : Int
@@ -36,7 +37,7 @@ pub struct Larder[K, V] {
 pub fn[K, V] Larder::capacity(Self[K, V]) -> Int
 pub fn[K, V] Larder::clear(Self[K, V]) -> Unit
 pub fn[K : Hash + Eq, V] Larder::contains(Self[K, V], K, now_ms~ : Int64) -> Bool
-pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, now_ms~ : Int64) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::from_array(Array[(K, V)], capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, on_remove? : (K, V, RemovalCause) -> Unit, now_ms~ : Int64) -> Self[K, V]
 pub fn[K : Hash + Eq + @json.FromJson, V : @json.FromJson] Larder::from_json(Json, @json.JsonPath) -> Self[K, V] raise @json.JsonDecodeError
 pub fn[K : Hash + Eq, V] Larder::get(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K : Hash + Eq, V] Larder::get_or_insert_with(Self[K, V], K, now_ms~ : Int64, ttl_ms? : Int64, () -> V) -> V
@@ -44,7 +45,7 @@ pub fn[K, V] Larder::is_empty(Self[K, V]) -> Bool
 pub fn[K, V] Larder::iter(Self[K, V]) -> Iter[(K, V)]
 pub fn[K, V] Larder::iter2(Self[K, V]) -> Iter2[K, V]
 pub fn[K, V] Larder::keys(Self[K, V]) -> Iter[K]
-pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy) -> Self[K, V]
+pub fn[K : Hash + Eq, V] Larder::new(capacity~ : Int, default_ttl_ms? : Int64, weigher? : (K, V) -> Int, policy? : EvictionPolicy, on_remove? : (K, V, RemovalCause) -> Unit) -> Self[K, V]
 pub fn[K, V] Larder::output(Self[K, V], &Logger) -> Unit
 pub fn[K : Hash + Eq, V] Larder::peek(Self[K, V], K, now_ms~ : Int64) -> V?
 pub fn[K, V] Larder::policy(Self[K, V]) -> EvictionPolicy
@@ -67,6 +68,16 @@ pub impl[K, V] Show for Larder[K, V]
 pub impl[K : ToJson, V : ToJson] ToJson for Larder[K, V]
 pub impl[K, V] @debug.Debug for Larder[K, V]
 pub impl[K : Hash + Eq + @json.FromJson, V : @json.FromJson] @json.FromJson for Larder[K, V]
+
+pub(all) enum RemovalCause {
+  Explicit
+  Replaced
+  Expired
+  Evicted
+} derive(Eq, @debug.Debug)
+pub fn RemovalCause::equal(Self, Self) -> Bool
+pub fn RemovalCause::not_equal(Self, Self) -> Bool
+pub fn RemovalCause::to_repr(Self) -> @debug.Repr
 
 pub struct Slot[V] {
   value : V
