@@ -1,14 +1,14 @@
 ///|
 /// A runnable tour of `moonlarder`, covering LRU eviction, TTL expiry,
-/// memoization, weighted capacity, the LFU and ARC eviction policies,
-/// the TinyLFU-style admission filter, removal listeners, and JSON
-/// snapshotting. Every step uses an explicit `now_ms` rather than a
-/// real clock, on purpose: `Larder` never reads time on its own, so
-/// this program's behavior is exactly reproducible on every target
-/// `moon run cmd/main` can build for.
+/// memoization, weighted capacity, the LFU, ARC, and WindowTinyLfu
+/// eviction policies, the TinyLFU-style admission filter, removal
+/// listeners, and JSON snapshotting. Every step uses an explicit
+/// `now_ms` rather than a real clock, on purpose: `Larder` never reads
+/// time on its own, so this program's behavior is exactly reproducible
+/// on every target `moon run cmd/main` can build for.
 fn main {
   println(
-    "moonlarder -- a generic in-memory cache with LRU/LFU/ARC eviction, TTL, and JSON snapshots",
+    "moonlarder -- a generic in-memory cache with LRU/LFU/ARC/WindowTinyLfu eviction, TTL, and JSON snapshots",
   )
   demo_lru()
   demo_bulk()
@@ -18,6 +18,7 @@ fn main {
   demo_lfu()
   demo_arc()
   demo_admission_filter()
+  demo_window_tiny_lfu()
   demo_removal_listener()
   demo_json()
 }
@@ -243,6 +244,65 @@ fn demo_admission_filter() -> Unit {
   println("  Lru + admission_filter keeps of the hot set: \{filtered_text}")
   println(
     "  admission_filter turned away \{rejections} of the 10 scan keys outright",
+  )
+}
+
+///|
+fn demo_window_tiny_lfu() -> Unit {
+  println(
+    "\n== WindowTinyLfu: giving a rising key a chance admission_filter can't ==",
+  )
+  // A cache already full of entries with real request history, then a
+  // brand-new key that's about to become popular - requested
+  // repeatedly right after it first shows up, the same "just-fetched
+  // page that's about to go viral" pattern a cache-aside call site
+  // produces naturally. admission_filter judges it on its very first,
+  // frequency-0 appearance; WindowTinyLfu gives it a window slot first.
+  let filtered : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    admission_filter=true,
+  )
+  let windowed : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=WindowTinyLfu,
+  )
+  fn establish_hot_set(cache : @moonlarder.Larder[String, Int]) -> Unit {
+    cache.set("a", 1, now_ms=0L)
+    cache.set("b", 2, now_ms=0L)
+    ignore(cache.get("a", now_ms=0L))
+    ignore(cache.get("a", now_ms=0L))
+    ignore(cache.get("b", now_ms=0L))
+    ignore(cache.get("b", now_ms=0L))
+    cache.set("c", 3, now_ms=0L) // cache now full, capacity 3
+  }
+
+  fn ramp_up(cache : @moonlarder.Larder[String, Int]) -> (Int, Int) {
+    let mut hits = 0
+    let mut misses = 0
+    for _i = 0; _i < 5; _i = _i + 1 {
+      match cache.get("rising", now_ms=0L) {
+        Some(_) => hits += 1
+        None => {
+          misses += 1
+          cache.set("rising", 100, now_ms=0L)
+        }
+      }
+    }
+    (hits, misses)
+  }
+
+  establish_hot_set(filtered)
+  establish_hot_set(windowed)
+  let (filtered_hits, filtered_misses) = ramp_up(filtered)
+  let (windowed_hits, windowed_misses) = ramp_up(windowed)
+  println(
+    "requesting the same not-yet-cached key 5 times in a row, right after it first appears, against a full capacity-3 cache:",
+  )
+  println(
+    "  Lru + admission_filter: \{filtered_hits} hit(s), \{filtered_misses} miss(es) before it's finally admitted",
+  )
+  println(
+    "  WindowTinyLfu:          \{windowed_hits} hit(s), \{windowed_misses} miss(es) - served from the window almost immediately",
   )
 }
 

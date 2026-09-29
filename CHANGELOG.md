@@ -6,6 +6,29 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.14.0]
+
+### Added
+
+- `cmd/main`'s `WindowTinyLfu` demo: the concrete payoff promised at
+  the end of 0.13.0. Against a full, already-established cache, a
+  brand-new key requested five times right after it first appears (the
+  "a page that's about to go viral" pattern) is served as real cache
+  hits almost immediately under `WindowTinyLfu`, since it's already
+  sitting in the window - a plain `admission_filter` cache, which can
+  only judge a key at `set()` time with no separate "provisionally
+  cached" state, forces every one of those early requests to miss
+  until the candidate accumulates enough sketch weight from its own
+  miss traffic to win outright admission. Measured on one run: 4
+  hits/1 miss under `WindowTinyLfu` versus 3 hits/2 misses under
+  `admission_filter`, over the same 5 requests.
+
+### Changed
+
+- README's opening line and `cmd/main` tour description now mention
+  `WindowTinyLfu` and `admission_filter` - previously one release
+  behind.
+
 ## [0.13.0]
 
 ### Added

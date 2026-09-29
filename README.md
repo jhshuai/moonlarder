@@ -1,8 +1,9 @@
 # moonlarder
 
-A generic in-memory cache for MoonBit with a choice of LRU, LFU, or ARC
-eviction, TTL expiry, and a memoizing `get_or_insert_with` helper,
-combined in a single bounded structure.
+A generic in-memory cache for MoonBit with a choice of LRU, LFU, ARC,
+or windowed TinyLFU eviction (plus a standalone TinyLFU-style
+admission filter for LRU), TTL expiry, and a memoizing
+`get_or_insert_with` helper, combined in a single bounded structure.
 
 ## Install
 
@@ -17,9 +18,9 @@ moon run cmd/main --target wasm-gc
 ```
 
 `cmd/main` is a runnable tour of LRU eviction, TTL expiry, memoization,
-weighted capacity, the LFU and ARC policies, the admission filter, and
-JSON snapshotting - each step prints what it did and why. It uses an
-explicit `now_ms` throughout
+weighted capacity, the LFU, ARC, and WindowTinyLfu policies, the
+admission filter, and JSON snapshotting - each step prints what it did
+and why. It uses an explicit `now_ms` throughout
 rather than a real clock (the same as everything else in this
 library), so its output is identical on every target: swap `wasm-gc`
 for `wasm`, `js`, or `native` (the last needs a C compiler on `PATH`,
@@ -211,6 +212,17 @@ disclosed simplification, not an attempt at byte-for-byte parity.
 `WindowTinyLfu` isn't compatible with a custom `weigher`, and is
 redundant with (so `new` aborts if combined with) `admission_filter`,
 since this policy already runs its own version of the same idea.
+
+`cmd/main` demonstrates the concrete payoff against a full,
+already-established cache: a brand-new key requested five times right
+after it first appears (the "a page that's about to go viral" pattern)
+gets served as real cache hits almost immediately under
+`WindowTinyLfu`, because it's already sitting in the window, while a
+plain `admission_filter` cache - which can only judge it at `set()`
+time, with no separate "already provisionally cached" state - forces
+every one of those early requests to miss until the candidate finally
+accumulates enough sketch weight from its own miss traffic to win
+outright admission.
 
 `Larder[K, V]` implements `ToJson`/`FromJson` when `K`/`V` do, for
 persisting and rehydrating a cache across a restart:

@@ -11,7 +11,7 @@
 
 name = "jhshuai/moonlarder"
 
-version = "0.13.0"
+version = "0.14.0"
 
 readme = "README.md"
 
@@ -19,11 +19,20 @@ repository = "https://github.com/jhshuai/moonlarder"
 
 license = "Apache-2.0"
 
-keywords = [ "cache", "lru", "lfu", "arc", "ttl", "memoize", "data-structures" ]
+keywords = [
+  "cache",
+  "lru",
+  "lfu",
+  "arc",
+  "tinylfu",
+  "ttl",
+  "memoize",
+  "data-structures",
+]
 
 preferred_target = "wasm"
 
-description = "A generic in-memory cache with LRU/LFU/ARC eviction, TTL expiry, and a memoizing get-or-insert helper"
+description = "A generic in-memory cache with LRU/LFU/ARC/WindowTinyLfu eviction, TTL expiry, and a memoizing get-or-insert helper"
 
 import {
   "moonbitlang/quickcheck@0.14.0",
