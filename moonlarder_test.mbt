@@ -562,9 +562,14 @@ test "policy reports back what new was given" {
     capacity=1,
     policy=Arc,
   )
+  let wtlfu : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=WindowTinyLfu,
+  )
   assert_eq(lru.policy(), Lru)
   assert_eq(lfu.policy(), Lfu)
   assert_eq(arc.policy(), Arc)
+  assert_eq(wtlfu.policy(), WindowTinyLfu)
 }
 
 ///|
@@ -921,6 +926,151 @@ test "clear resets admission_rejections()" {
   assert_eq(c.admission_rejections(), 1)
   c.clear()
   assert_eq(c.admission_rejections(), 0)
+}
+
+///|
+test "panic Larder::new aborts if WindowTinyLfu is combined with a weigher" {
+  let _ : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=WindowTinyLfu,
+    weigher=fn(_key, _value) { 1 },
+  )
+}
+
+///|
+test "panic Larder::new aborts if WindowTinyLfu is combined with admission_filter" {
+  let _ : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=1,
+    policy=WindowTinyLfu,
+    admission_filter=true,
+  )
+}
+
+///|
+test "WindowTinyLfu admits window-evicted candidates into probation while main has room, and promotes a probation hit to protected" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=10,
+    policy=WindowTinyLfu,
+  )
+  c.set("a", 1, now_ms=0L) // window = [a]
+  c.set("b", 2, now_ms=0L) // window overflows (capacity 1): "a" -> probation
+  c.set("c", 3, now_ms=0L) // window overflows again: "b" -> probation
+  // main (9 slots) has plenty of room, so neither admission cost "a" nor
+  // "b" anything - all three keys are still live.
+  assert_eq(c.size(), 3)
+  assert_eq(c.stats().evictions, 0)
+  ignore(c.get("a", now_ms=0L)) // a hit on a probation entry promotes it
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+}
+
+///|
+test "WindowTinyLfu's protected segment demotes its own least-recently-used entry, rather than evicting anything, when a promotion pushes it over budget" {
+  // capacity 3 -> window=1, main=2, protected=1: promoting a second key
+  // into protected immediately exceeds its budget of one.
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=WindowTinyLfu,
+  )
+  c.set("a", 1, now_ms=0L) // window = [a]
+  c.set("b", 2, now_ms=0L) // window overflow: "a" -> probation
+  ignore(c.get("a", now_ms=0L)) // "a": probation -> protected (fits, cap 1)
+  c.set("c", 3, now_ms=0L) // window overflow: "b" -> probation (main has room: 1 < 2)
+  ignore(c.get("b", now_ms=0L)) // "b": probation -> protected, over budget ->
+  // demotes "a" back to probation - not an eviction
+  assert_eq(c.get("a", now_ms=0L), Some(1))
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.size(), 3)
+  assert_eq(c.stats().evictions, 0)
+}
+
+///|
+test "WindowTinyLfu's admission contest evicts the losing side once main is full" {
+  // capacity 3 -> window=1, main=2: after two admissions main is full,
+  // so a third distinct key forces an actual contest.
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=WindowTinyLfu,
+  )
+  c.set("a", 1, now_ms=0L) // window = [a]
+  c.set("b", 2, now_ms=0L) // window overflow: "a" -> probation
+  c.set("c", 3, now_ms=0L) // window overflow: "b" -> probation; main now full
+  // "d" pushes "c" out of the window; main is full, so "c" contests
+  // admission against probation's own least-recently-used entry, "a" -
+  // neither has ever been requested, so the tie favors "c", the
+  // newcomer, the same rule `admission_filter` uses.
+  c.set("d", 4, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.get("d", now_ms=0L), Some(4))
+  assert_eq(c.size(), 3)
+  assert_eq(c.stats().evictions, 1)
+}
+
+///|
+test "WindowTinyLfu lets a candidate that built real frequency while sitting in the window win against an untouched probation victim" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=WindowTinyLfu,
+  )
+  c.set("a", 1, now_ms=0L) // window = [a]
+  c.set("b", 2, now_ms=0L) // window overflow: "a" -> probation
+  c.set("c", 3, now_ms=0L) // window overflow: "b" -> probation; main full
+  // "c" sits in the window and gets requested twice before it's ever
+  // forced to compete - exactly the grace period a plain admission
+  // filter (which tests a newcomer on its very first appearance,
+  // before it can have any request history at all) can't offer.
+  ignore(c.get("c", now_ms=0L))
+  ignore(c.get("c", now_ms=0L))
+  c.set("d", 4, now_ms=0L) // pushes "c" out of the window with an
+  // established frequency of 2, against probation's "a" at 0
+  assert_eq(c.get("a", now_ms=0L), None) // lost the contest
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3)) // won on its built-up frequency
+  assert_eq(c.get("d", now_ms=0L), Some(4))
+  assert_eq(c.stats().evictions, 1)
+}
+
+///|
+test "remove cleans up WindowTinyLfu region membership" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=WindowTinyLfu,
+  )
+  c.set("a", 1, now_ms=0L) // window = [a]
+  assert_eq(c.remove("a"), Some(1))
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L)
+  c.set("d", 4, now_ms=0L)
+  // if "a" had been left dangling in wtlfu_window's bookkeeping, this
+  // sequence would misbehave (an extra phantom slot or a stale victim)
+  assert_eq(c.size(), 3)
+  assert_eq(c.stats().evictions, 0)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.get("b", now_ms=0L), Some(2))
+  assert_eq(c.get("c", now_ms=0L), Some(3))
+  assert_eq(c.get("d", now_ms=0L), Some(4))
+}
+
+///|
+test "clear resets WindowTinyLfu region membership" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=3,
+    policy=WindowTinyLfu,
+  )
+  c.set("a", 1, now_ms=0L)
+  c.set("b", 2, now_ms=0L)
+  c.set("c", 3, now_ms=0L)
+  c.clear()
+  assert_eq(c.size(), 0)
+  c.set("x", 10, now_ms=0L)
+  c.set("y", 20, now_ms=0L)
+  c.set("z", 30, now_ms=0L)
+  assert_eq(c.size(), 3)
+  assert_eq(c.stats().evictions, 0)
 }
 
 ///|

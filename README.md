@@ -177,6 +177,41 @@ with `Lfu`/`Arc` or a `weigher`. `cmd/main` runs the same
 hot-set-plus-scan workload as the `Arc` demo through both a plain
 `Lru` cache and an admission-filtered one, side by side.
 
+`admission_filter` has one real weakness: it tests a brand-new key
+against the eviction victim on the newcomer's very first appearance,
+before it's had any chance to build up request history of its own - so
+a key that's genuinely about to become popular can still lose that
+first comparison and never get a second chance. `policy=WindowTinyLfu`
+fixes exactly that, with a different architecture rather than a tunable
+knob:
+
+```moonbit nocheck
+let cache : Larder[String, Int] = Larder::new(capacity=100, policy=WindowTinyLfu)
+```
+
+Instead of gating every insert directly, capacity is split into a
+small `Lru` **window** (10%, minimum 1 entry) and a larger **main**
+space every new key must earn its way into. Every new key lands in the
+window first; only once the window itself overflows does the evicted
+candidate contest admission into main - by which point it's had a
+chance to accumulate real hits (each promoting it within the window,
+buying more time) if it's actually being requested repeatedly. Main
+itself is a segmented `Lru` (SLRU): a probationary segment newly
+admitted keys enter, and a protected segment (80% of main) a
+probationary entry is promoted into on its first hit there, demoting
+protected's own least-recently-used entry back to probation if that
+promotion overflows it - a pure move between the two segments, never
+an eviction. The admission contest itself is the same frequency
+comparison `admission_filter` runs, just applied later, after the
+window has given the candidate a chance to prove itself.
+
+These are fixed fractions (Caffeine's own defaults), not the adaptive,
+hill-climbing-tuned window size the production system uses - a
+disclosed simplification, not an attempt at byte-for-byte parity.
+`WindowTinyLfu` isn't compatible with a custom `weigher`, and is
+redundant with (so `new` aborts if combined with) `admission_filter`,
+since this policy already runs its own version of the same idea.
+
 `Larder[K, V]` implements `ToJson`/`FromJson` when `K`/`V` do, for
 persisting and rehydrating a cache across a restart:
 
@@ -185,11 +220,12 @@ let snapshot : Json = ToJson::to_json(cache)
 let restored : Larder[String, Int] = @json.from_json(snapshot)
 ```
 
-The snapshot is `{"capacity": .., "policy": "lru"|"lfu"|"arc", "entries":
-[{"key": .., "value": ..}, ..]}`. It's a snapshot of *contents*, not a
-byte-for-byte save state: LRU recency order, LFU frequencies, ARC's
-T1/T2/ghost-list state, and TTLs don't survive the round trip (a
-reloaded entry never expires on its
+The snapshot is `{"capacity": .., "policy": "lru"|"lfu"|"arc"|"wtinylfu",
+"entries": [{"key": .., "value": ..}, ..]}`. It's a snapshot of
+*contents*, not a byte-for-byte save state: LRU recency order, LFU
+frequencies, ARC's T1/T2/ghost-list state, WindowTinyLfu's window/main
+membership, and TTLs don't survive the round trip (a reloaded entry
+never expires on its
 own, and `FromJson` always uses the default count-based weigher and
 leaves the admission filter off, since a weigher is a function and
 there's nothing in JSON to deserialize a filter's sketch state from
@@ -288,6 +324,15 @@ rejected insert must leave the cache exactly as it was) plus
 hand-picked unit tests for the admission decision itself - both the
 rejection case and the "a tie favors the newcomer" rule that keeps a
 cold sketch from degenerating into rejecting every insert.
+`WindowTinyLfu` gets the same three properties (capacity,
+`to_array`/`peek` agreement, `on_remove` counts) `Arc` does, plus
+hand-picked unit tests walking through each mechanism by hand: window
+overflow admitting into probation, a probation hit promoting to
+protected, a protected overflow demoting back to probation without
+evicting anything, the admission contest itself picking a winner, and
+- the whole point of the window - a candidate that built up real
+frequency while still sitting there beating an untouched incumbent it
+would have lost to immediately under a plain `admission_filter`.
 
 ## Benchmarks
 

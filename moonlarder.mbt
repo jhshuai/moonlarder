@@ -19,6 +19,22 @@ pub(all) enum EvictionPolicy {
   /// fit `get`/`set` being separate calls. Not compatible with a
   /// custom `weigher` - `new` aborts if both are given.
   Arc
+  /// The windowed TinyLFU architecture (Einziger, Friedman, and Manes,
+  /// "TinyLFU: A Highly Efficient Cache Admission Policy", ACM TOS
+  /// 2017, as structured in Caffeine's implementation): a small `Lru`
+  /// "window" absorbs every new key first, giving it a chance to build
+  /// up real request frequency before it has to prove itself: only
+  /// when the window itself overflows does the evicted candidate
+  /// contest admission into the larger main space against that space's
+  /// own weakest entry, the same frequency comparison `admission_filter`
+  /// runs directly against every newcomer. This is what
+  /// `admission_filter` alone can't do - a key admission rejects on
+  /// its very first appearance never gets a second chance to show it's
+  /// actually popular. See `Larder::new`'s doc comment for the
+  /// region-sizing rule and other scope limits. Not compatible with a
+  /// custom `weigher`, and redundant with (so `new` aborts if combined
+  /// with) `admission_filter`, since this policy already runs its own.
+  WindowTinyLfu
 } derive(Eq, Debug)
 
 ///|
@@ -103,6 +119,18 @@ pub struct Larder[K, V] {
   // nothing beyond the one field.
   sketch : FrequencySketch[K]?
   mut rejected_count : Int
+  // WindowTinyLfu bookkeeping: wtlfu_window is a small Lru region every
+  // new key enters directly; wtlfu_probation and wtlfu_protected
+  // together form the "main" space - an SLRU (segmented Lru) that a
+  // window-evicted candidate only enters by winning the admission
+  // contest. wtlfu_window_capacity and wtlfu_protected_capacity are
+  // fixed fractions of `capacity`, recomputed on `resize`. All stay
+  // empty/zero under every other policy.
+  wtlfu_window : Map[K, Unit]
+  wtlfu_probation : Map[K, Unit]
+  wtlfu_protected : Map[K, Unit]
+  mut wtlfu_window_capacity : Int
+  mut wtlfu_protected_capacity : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int
@@ -143,6 +171,7 @@ pub impl[K, V] Show for Larder[K, V] with fn output(self, logger) {
     Lru => "lru"
     Lfu => "lfu"
     Arc => "arc"
+    WindowTinyLfu => "wtinylfu"
   }
   logger.write_string(
     "Larder(size=\{self.table.length()}, capacity=\{self.capacity}, weight=\{self.current_weight}, policy=\{policy})",
@@ -199,6 +228,25 @@ pub extend Larder with @moonbitlang/core/debug.Debug::{to_repr}
 /// removal - so a listener that calls back into the cache (`size()`,
 /// `get()`, even inserting a replacement) sees consistent state, not a
 /// half-finished removal.
+///
+/// `policy=WindowTinyLfu` splits `capacity` into a window (10%,
+/// minimum 1) and a main space (the rest), itself split into a
+/// protected segment (80% of main) and a probationary one (the
+/// remainder) - Caffeine's own default ratios, simplified here to
+/// fixed fractions rather than the hill-climbing adaptive resizing the
+/// production system uses. Every new key lands in the window; only
+/// when the window overflows does the evicted candidate contest
+/// admission into probation against probation's own weakest entry (the
+/// same comparison `admission_filter` runs directly against every
+/// newcomer, but only after the candidate has had a chance to build up
+/// real request frequency while sitting in the window). A probation
+/// entry that gets a hit is promoted to protected; a protected entry
+/// that overflows the protected segment demotes back to probation.
+/// TTLs, `on_remove`, and everything else about `Larder` work the same
+/// as under any other policy. Not compatible with a custom `weigher`
+/// - `new` aborts if both are given - and redundant with
+/// `admission_filter` (which only makes sense layered on `Lru`), so
+/// `new` also aborts if both are given.
 pub fn[K : Hash + Eq, V] Larder::new(
   capacity~ : Int,
   default_ttl_ms? : Int64,
@@ -210,12 +258,13 @@ pub fn[K : Hash + Eq, V] Larder::new(
   guard capacity > 0 else {
     abort("Larder::new: capacity must be positive, got \{capacity}")
   }
-  let arc_with_weigher = match (policy, weigher) {
+  let policy_weigher_conflict = match (policy, weigher) {
     (Some(Arc), Some(_)) => true
+    (Some(WindowTinyLfu), Some(_)) => true
     _ => false
   }
-  guard !arc_with_weigher else {
-    abort("Larder::new: the Arc policy doesn't support a custom weigher")
+  guard !policy_weigher_conflict else {
+    abort("Larder::new: this policy doesn't support a custom weigher")
   }
   let filtered = match admission_filter {
     Some(enabled) => enabled
@@ -227,7 +276,9 @@ pub fn[K : Hash + Eq, V] Larder::new(
     Some(_) => true
   }
   guard !(filtered && filter_needs_plain_lru) else {
-    abort("Larder::new: admission_filter is only supported with policy=Lru")
+    abort(
+      "Larder::new: admission_filter is only supported with policy=Lru (WindowTinyLfu already runs its own)",
+    )
   }
   let filter_with_weigher = match weigher {
     Some(_) => filtered
@@ -236,6 +287,11 @@ pub fn[K : Hash + Eq, V] Larder::new(
   guard !filter_with_weigher else {
     abort("Larder::new: admission_filter doesn't support a custom weigher")
   }
+  let is_window_tiny_lfu = match policy {
+    Some(WindowTinyLfu) => true
+    _ => false
+  }
+  let (window_capacity, protected_capacity) = wtlfu_sizes(capacity)
   {
     table: {},
     policy: match policy {
@@ -260,17 +316,34 @@ pub fn[K : Hash + Eq, V] Larder::new(
     arc_b1: {},
     arc_b2: {},
     arc_p: 0,
-    sketch: if filtered {
+    sketch: if filtered || is_window_tiny_lfu {
       Some(FrequencySketch::new(capacity~))
     } else {
       None
     },
     rejected_count: 0,
+    wtlfu_window: {},
+    wtlfu_probation: {},
+    wtlfu_protected: {},
+    wtlfu_window_capacity: window_capacity,
+    wtlfu_protected_capacity: protected_capacity,
     hit_count: 0,
     miss_count: 0,
     eviction_count: 0,
     expiration_count: 0,
   }
+}
+
+///|
+/// The window and protected-segment capacities `WindowTinyLfu` uses
+/// for a cache of the given total `capacity` - see `Larder::new`'s doc
+/// comment for the ratios. Shared by `new` and `resize` so both apply
+/// the exact same rule.
+fn wtlfu_sizes(capacity : Int) -> (Int, Int) {
+  let window_capacity = (capacity / 10).max(1)
+  let main_capacity = capacity - window_capacity
+  let protected_capacity = main_capacity * 8 / 10
+  (window_capacity, protected_capacity)
 }
 
 ///|
@@ -434,6 +507,11 @@ fn[K : Hash + Eq, V] Larder::discard(
       self.arc_t1.remove(key)
       self.arc_t2.remove(key)
     }
+    WindowTinyLfu => {
+      self.wtlfu_window.remove(key)
+      self.wtlfu_probation.remove(key)
+      self.wtlfu_protected.remove(key)
+    }
   }
   (self.on_remove)(key, slot.value, cause)
 }
@@ -588,12 +666,40 @@ fn[K : Hash + Eq, V] Larder::arc_insert_new_key(
 }
 
 ///|
+/// A generic fallback eviction for `WindowTinyLfu`, used by
+/// `resize`'s shrink path rather than the admission-contest logic
+/// `set` runs for a specific incoming candidate: evicts from the
+/// window first (the least-proven region), then probation, then
+/// protected - always leaving at least one entry in place, the same
+/// guarantee `enforce_capacity`'s caller already provides.
+fn[K : Hash + Eq, V] Larder::wtlfu_evict_fallback(self : Larder[K, V]) -> Unit {
+  let region = if !self.wtlfu_window.is_empty() {
+    self.wtlfu_window
+  } else if !self.wtlfu_probation.is_empty() {
+    self.wtlfu_probation
+  } else {
+    self.wtlfu_protected
+  }
+  for key in region.keys() {
+    match self.table.get(key) {
+      Some(slot) => {
+        self.discard(key, slot, Evicted)
+        self.eviction_count += 1
+      }
+      None => ()
+    }
+    break
+  }
+}
+
+///|
 /// Evicts one entry per `policy`, if any.
 fn[K : Hash + Eq, V] Larder::evict_one(self : Larder[K, V]) -> Unit {
   match self.policy {
     Lru => self.evict_lru()
     Lfu => self.evict_lfu()
     Arc => self.arc_replace(false)
+    WindowTinyLfu => self.wtlfu_evict_fallback()
   }
 }
 
@@ -620,6 +726,37 @@ fn[K : Hash + Eq, V] Larder::drop_expired(
 }
 
 ///|
+/// Records a hit on `key` for `WindowTinyLfu`'s own bookkeeping: moves
+/// it to the most-recently-used position within whichever of
+/// window/probation/protected it's currently in, promoting
+/// probation -> protected on the way (demoting protected's own
+/// least-recently-used entry back to probation if that promotion pushed
+/// protected over its budget - a pure move between the two main
+/// segments, not a removal, so it never touches `on_remove`).
+fn[K : Hash + Eq, V] Larder::wtlfu_promote(
+  self : Larder[K, V],
+  key : K,
+) -> Unit {
+  if self.wtlfu_window.contains(key) {
+    self.wtlfu_window.remove(key)
+    self.wtlfu_window.set(key, ())
+  } else if self.wtlfu_probation.contains(key) {
+    self.wtlfu_probation.remove(key)
+    self.wtlfu_protected.set(key, ())
+    if self.wtlfu_protected.length() > self.wtlfu_protected_capacity {
+      for oldest in self.wtlfu_protected.keys() {
+        self.wtlfu_protected.remove(oldest)
+        self.wtlfu_probation.set(oldest, ())
+        break
+      }
+    }
+  } else {
+    self.wtlfu_protected.remove(key)
+    self.wtlfu_protected.set(key, ())
+  }
+}
+
+///|
 /// Records a live hit on an already-present, non-expired `key`: moves it
 /// to the most-recently-used position under `Lru`, or bumps its access
 /// frequency under `Lfu`. Returns the (possibly updated) slot now stored
@@ -642,6 +779,10 @@ fn[K : Hash + Eq, V] Larder::record_access(
         self.arc_t2.remove(key)
         self.arc_t2.set(key, ())
       }
+      slot
+    }
+    WindowTinyLfu => {
+      self.wtlfu_promote(key)
       slot
     }
     Lfu => {
@@ -828,6 +969,7 @@ pub impl[K : ToJson, V : ToJson] ToJson for Larder[K, V] with fn to_json(self) {
     Lru => "lru"
     Lfu => "lfu"
     Arc => "arc"
+    WindowTinyLfu => "wtinylfu"
   }
   let entries = []
   for key, slot in self.table {
@@ -884,11 +1026,12 @@ pub impl[K : Hash + Eq + FromJson, V : FromJson] FromJson for Larder[K, V] with 
     String("lru") => Lru
     String("lfu") => Lfu
     String("arc") => Arc
+    String("wtinylfu") => WindowTinyLfu
     _ =>
       raise JsonDecodeError(
         (
           path.add_key("policy"),
-          "Larder::from_json: expected \"lru\", \"lfu\", or \"arc\"",
+          "Larder::from_json: expected \"lru\", \"lfu\", \"arc\", or \"wtinylfu\"",
         ),
       )
   }
@@ -950,24 +1093,115 @@ pub extend Larder with @moonbitlang/core/json.FromJson::{from_json}
 /// forever). `Larder::new`'s guard against combining `admission_filter`
 /// with anything but `Lru` is what lets this assume the eviction
 /// victim is always simply `table`'s first entry.
+///
+/// Only ever applies under `Lru` (the one policy `admission_filter`
+/// composes with) even though `self.sketch` is also populated under
+/// `WindowTinyLfu` - that policy runs its own, differently-shaped
+/// admission contest (`wtlfu_admit_or_reject`) entirely within
+/// `wtlfu_insert_new_key`, and must not additionally be gated here.
 fn[K : Hash, V] Larder::rejects_admission(
   self : Larder[K, V],
   key : K,
   weight : Int,
 ) -> Bool {
-  match self.sketch {
-    None => false
-    Some(sketch) =>
-      if self.current_weight + weight <= self.capacity || self.table.is_empty() {
-        false
-      } else {
-        let mut victim_freq = 0
-        for victim_key, _victim_slot in self.table {
-          victim_freq = sketch.estimate(victim_key)
-          break
-        }
-        sketch.estimate(key) < victim_freq
+  match self.policy {
+    Lru =>
+      match self.sketch {
+        None => false
+        Some(sketch) =>
+          if self.current_weight + weight <= self.capacity ||
+            self.table.is_empty() {
+            false
+          } else {
+            let mut victim_freq = 0
+            for victim_key, _victim_slot in self.table {
+              victim_freq = sketch.estimate(victim_key)
+              break
+            }
+            sketch.estimate(key) < victim_freq
+          }
       }
+    _ => false
+  }
+}
+
+///|
+/// If `key` is currently a live entry, evicts it (`discard` plus the
+/// `eviction_count` bump `evict_lru`/`evict_lfu`/`arc_replace` all do
+/// the same way) - a no-op if it isn't, which lets callers pass a key
+/// that may already be gone without checking first. Only meaningful
+/// under `WindowTinyLfu`, whose admission contest can end with either
+/// side (the candidate or the incumbent victim) being the one to leave.
+fn[K : Hash + Eq, V] Larder::wtlfu_discard_if_present(
+  self : Larder[K, V],
+  key : K,
+) -> Unit {
+  match self.table.get(key) {
+    Some(slot) => {
+      self.discard(key, slot, Evicted)
+      self.eviction_count += 1
+    }
+    None => ()
+  }
+}
+
+///|
+/// The TinyLFU admission contest itself, run on `candidate` - a key
+/// just evicted from the window - against probation's own
+/// least-recently-used entry, if main (probation + protected) has no
+/// spare room for `candidate` outright. Ties favor `candidate`, the
+/// same rule `rejects_admission` uses, for the same reason: a sketch
+/// that has never seen either key shouldn't refuse every admission
+/// forever.
+fn[K : Hash + Eq, V] Larder::wtlfu_admit_or_reject(
+  self : Larder[K, V],
+  candidate : K,
+) -> Unit {
+  let main_capacity = self.capacity - self.wtlfu_window_capacity
+  let main_len = self.wtlfu_probation.length() + self.wtlfu_protected.length()
+  if main_len < main_capacity {
+    self.wtlfu_probation.set(candidate, ())
+  } else if self.wtlfu_probation.is_empty() {
+    // main_capacity is 0 (a tiny total capacity) - there's never room,
+    // so the candidate is simply evicted rather than contested.
+    self.wtlfu_discard_if_present(candidate)
+  } else {
+    for victim in self.wtlfu_probation.keys() {
+      let candidate_wins = match self.sketch {
+        None => true
+        Some(sketch) => sketch.estimate(candidate) >= sketch.estimate(victim)
+      }
+      if candidate_wins {
+        self.wtlfu_probation.remove(victim)
+        self.wtlfu_discard_if_present(victim)
+        self.wtlfu_probation.set(candidate, ())
+      } else {
+        self.wtlfu_discard_if_present(candidate)
+      }
+      break
+    }
+  }
+}
+
+///|
+/// Handles a `set()` on a key not currently in the cache, under
+/// `WindowTinyLfu`: always admits `key` into the window first, then -
+/// only if that pushed the window over its own budget - evicts the
+/// window's least-recently-used entry and runs it through the
+/// admission contest (`wtlfu_admit_or_reject`) for a place in main.
+/// Does not touch `table` itself, which `set` handles right after
+/// calling this, the same division of labor `arc_insert_new_key` uses.
+fn[K : Hash + Eq, V] Larder::wtlfu_insert_new_key(
+  self : Larder[K, V],
+  key : K,
+) -> Unit {
+  self.wtlfu_window.set(key, ())
+  if self.wtlfu_window.length() > self.wtlfu_window_capacity {
+    for candidate in self.wtlfu_window.keys() {
+      self.wtlfu_window.remove(candidate)
+      self.wtlfu_admit_or_reject(candidate)
+      break
+    }
   }
 }
 
@@ -991,6 +1225,7 @@ pub fn[K : Hash + Eq, V] Larder::set(
       let freq = match self.policy {
         Lru => old_slot.freq
         Arc => old_slot.freq
+        WindowTinyLfu => old_slot.freq
         Lfu => self.lfu_bump(key, old_slot.freq)
       }
       let new_slot = { value, expire_at, weight, freq, }
@@ -1007,6 +1242,10 @@ pub fn[K : Hash + Eq, V] Larder::set(
           }
           self.table.set(key, new_slot)
         }
+        WindowTinyLfu => {
+          self.wtlfu_promote(key)
+          self.table.set(key, new_slot)
+        }
       }
       (self.on_remove)(key, old_slot.value, Replaced)
     }
@@ -1020,6 +1259,10 @@ pub fn[K : Hash + Eq, V] Larder::set(
         }
         Arc => {
           self.arc_insert_new_key(key)
+          self.table.set(key, new_slot)
+        }
+        WindowTinyLfu => {
+          self.wtlfu_insert_new_key(key)
           self.table.set(key, new_slot)
         }
       }
@@ -1078,6 +1321,7 @@ pub fn[K : Hash + Eq, V] Larder::touch_ttl(
         let freq = match self.policy {
           Lru => slot.freq
           Arc => slot.freq
+          WindowTinyLfu => slot.freq
           Lfu => self.lfu_bump(key, slot.freq)
         }
         let new_slot = {
@@ -1089,6 +1333,10 @@ pub fn[K : Hash + Eq, V] Larder::touch_ttl(
         match self.policy {
           Lru => self.touch(key, new_slot)
           Lfu => self.table.set(key, new_slot)
+          WindowTinyLfu => {
+            self.wtlfu_promote(key)
+            self.table.set(key, new_slot)
+          }
           Arc => {
             if self.arc_t1.contains(key) {
               self.arc_t1.remove(key)
@@ -1186,6 +1434,9 @@ pub fn[K, V] Larder::clear(self : Larder[K, V]) -> Unit {
   self.arc_b1.clear()
   self.arc_b2.clear()
   self.arc_p = 0
+  self.wtlfu_window.clear()
+  self.wtlfu_probation.clear()
+  self.wtlfu_protected.clear()
   match self.sketch {
     Some(sketch) => sketch.clear()
     None => ()
@@ -1302,6 +1553,11 @@ pub fn[K : Hash + Eq, V] Larder::resize(
   }
   self.capacity = new_capacity
   self.arc_p = self.arc_p.min(new_capacity)
+  if self.policy == WindowTinyLfu {
+    let (window_capacity, protected_capacity) = wtlfu_sizes(new_capacity)
+    self.wtlfu_window_capacity = window_capacity
+    self.wtlfu_protected_capacity = protected_capacity
+  }
   self.enforce_capacity()
 }
 

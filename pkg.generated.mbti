@@ -15,6 +15,7 @@ pub(all) enum EvictionPolicy {
   Lru
   Lfu
   Arc
+  WindowTinyLfu
 } derive(Eq, @debug.Debug)
 pub fn EvictionPolicy::equal(Self, Self) -> Bool
 pub fn EvictionPolicy::not_equal(Self, Self) -> Bool
@@ -53,6 +54,11 @@ pub struct Larder[K, V] {
   mut arc_p : Int
   sketch : FrequencySketch[K]?
   mut rejected_count : Int
+  wtlfu_window : Map[K, Unit]
+  wtlfu_probation : Map[K, Unit]
+  wtlfu_protected : Map[K, Unit]
+  mut wtlfu_window_capacity : Int
+  mut wtlfu_protected_capacity : Int
   mut hit_count : Int
   mut miss_count : Int
   mut eviction_count : Int

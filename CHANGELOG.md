@@ -6,6 +6,47 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.13.0]
+
+### Added
+
+- A fourth eviction policy: `policy=WindowTinyLfu`, the windowed
+  TinyLFU architecture (Einziger, Friedman, and Manes, ACM TOS 2017, as
+  structured in Caffeine's implementation) - fixing `admission_filter`'s
+  one real weakness, that it tests a brand-new key against the
+  eviction victim on the newcomer's very first appearance, before it's
+  had any chance to build up request history. Capacity splits into a
+  small `Lru` window (10%, minimum 1) every new key enters first, and
+  a larger main space (a segmented `Lru`: probationary + protected,
+  80% of main) a window-evicted candidate only enters by winning the
+  same admission contest `admission_filter` runs, just run later -
+  after the window has given it a chance to prove itself with real
+  hits. A probation hit promotes to protected; a protected overflow
+  demotes back to probation (a pure move, never an eviction). Fixed
+  fractions rather than Caffeine's adaptive, hill-climbing-tuned window
+  size - a disclosed simplification. Not compatible with a custom
+  `weigher`, and redundant with (so `new` aborts if combined with)
+  `admission_filter`.
+- Three new quickcheck properties (capacity never exceeded,
+  `to_array`/`peek` agreement, `on_remove` counts matching `stats()`)
+  and hand-picked unit tests walking through every mechanism -
+  including a candidate that built up real frequency while sitting in
+  the window beating an untouched incumbent it would have lost to
+  immediately under a plain `admission_filter`.
+- Fixed a real bug caught during this work before it shipped:
+  `admission_filter`'s own admission check (`rejects_admission`) was
+  gated only on `self.sketch` being present, which `WindowTinyLfu` also
+  populates for its own unrelated purposes - so without an explicit
+  policy check, `WindowTinyLfu` would have had the `Lru`-shaped
+  admission_filter check silently running on top of its own window
+  logic on every insert. Caught by re-reading the interaction between
+  the two features before writing tests, not by a failing test.
+
+README explains the mechanism, but `cmd/main` doesn't have a
+`WindowTinyLfu` demo yet - a concrete, running side-by-side proof
+against a plain `admission_filter` cache, the same way `Arc`'s demo
+proves its own value against plain `Lru`; that's next.
+
 ## [0.12.0]
 
 ### Added

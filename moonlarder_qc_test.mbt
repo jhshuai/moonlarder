@@ -354,6 +354,96 @@ fn prop_admission_filter_capacity_is_never_exceeded(
 }
 
 ///|
+/// Same invariant, under `policy=WindowTinyLfu` - the window/probation/
+/// protected split must never let the total live entry count exceed
+/// `capacity`, regardless of how admission contests and promotions
+/// shuffle keys between the three regions.
+fn prop_window_tiny_lfu_capacity_is_never_exceeded(
+  ops : Array[(Int, Int, Int)],
+) -> Bool {
+  let capacity = 5
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    policy=@moonlarder.WindowTinyLfu,
+  )
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 4 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      2 => ignore(cache.remove(key))
+      _ => ignore(cache.retain(fn(k, _v) { k != key }))
+    }
+    if cache.size() > cache.capacity() {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Same check as `prop_to_array_agrees_with_peek`, run against a
+/// `WindowTinyLfu` cache.
+fn prop_window_tiny_lfu_to_array_agrees_with_peek(
+  ops : Array[(Int, Int, Int)],
+) -> Bool {
+  let capacity = 5
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    policy=@moonlarder.WindowTinyLfu,
+  )
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 3 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      _ => ignore(cache.remove(key))
+    }
+  }
+  for entry in cache.to_array(now_ms=0L) {
+    if cache.peek(entry.0, now_ms=0L) != Some(entry.1) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// `on_remove`'s Evicted counts must match `stats()` under
+/// `WindowTinyLfu` too - exercising the admission contest's two exit
+/// points (candidate loses, or wins and displaces the incumbent) on
+/// top of the usual `remove`/`retain` paths.
+fn prop_window_tiny_lfu_on_remove_counts_match_stats(
+  ops : Array[(Int, Int, Int)],
+) -> Bool {
+  let capacity = 5
+  let evicted = [0]
+  let cache : @moonlarder.Larder[Int, Int] = @moonlarder.Larder::new(
+    capacity~,
+    policy=@moonlarder.WindowTinyLfu,
+    on_remove=fn(_key, _value, cause) {
+      match cause {
+        Evicted => evicted[0] = evicted[0] + 1
+        _ => ()
+      }
+    },
+  )
+  for op in ops {
+    let (kind, raw_key, value) = op
+    let key = fold_key(raw_key)
+    match kind % 4 {
+      0 => ignore(cache.get(key, now_ms=0L))
+      1 => cache.set(key, value, now_ms=0L)
+      2 => ignore(cache.remove(key))
+      _ => ignore(cache.retain(fn(k, _v) { k != key }))
+    }
+  }
+  evicted[0] == cache.stats().evictions
+}
+
+///|
 /// Every entry `to_array` reports present must actually be gettable
 /// (via `peek`, so the check itself doesn't disturb recency) with the
 /// exact value `to_array` reported.
@@ -505,4 +595,19 @@ test "property: Arc's on_remove firing counts match stats() exactly" {
 ///|
 test "property: admission_filter never lets the cache exceed capacity, rejected or not" {
   @quickcheck.quick_check_fn(prop_admission_filter_capacity_is_never_exceeded)
+}
+
+///|
+test "property: WindowTinyLfu never exceeds capacity" {
+  @quickcheck.quick_check_fn(prop_window_tiny_lfu_capacity_is_never_exceeded)
+}
+
+///|
+test "property: WindowTinyLfu's to_array always agrees with peek" {
+  @quickcheck.quick_check_fn(prop_window_tiny_lfu_to_array_agrees_with_peek)
+}
+
+///|
+test "property: WindowTinyLfu's on_remove firing counts match stats() exactly" {
+  @quickcheck.quick_check_fn(prop_window_tiny_lfu_on_remove_counts_match_stats)
 }
