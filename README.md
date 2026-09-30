@@ -1,5 +1,8 @@
 # moonlarder
 
+[![CI](https://github.com/jhshuai/moonlarder/actions/workflows/ci.yml/badge.svg)](https://github.com/jhshuai/moonlarder/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/jhshuai/moonlarder)](LICENSE)
+
 A generic in-memory cache for MoonBit with a choice of LRU, LFU, ARC,
 or windowed TinyLFU eviction (plus a standalone TinyLFU-style
 admission filter for LRU), TTL expiry, and a memoizing
@@ -383,6 +386,23 @@ magnitude at capacity 100 and three orders of magnitude by 10,000 -
 the frequency-bucket/`Map`-reinsertion design isn't just asymptotically
 nicer on paper, it's the difference between a cache that's free to use
 liberally and one that becomes the bottleneck as it grows.
+
+## Real-world usage
+
+Benchmarks prove the design is fast in isolation; they don't prove the
+API actually holds up as a dependency in someone else's code. So
+[`jhshuai/moonlarder-shortlink`](https://github.com/jhshuai/moonlarder-shortlink)
+exists to answer that directly: a small URL-shortener core built
+*against* `moonlarder` as a real, separately-versioned import (resolved
+via `moon.work` in development, the same way a monorepo or a
+pre-publish integration check would), not copy-pasted code sharing
+this repository's build.
+
+It's a genuine two-cache-shapes-in-one-system example - `get_or_insert_with`
+for memoizing code generation, and a capacity-and-TTL-bounded `Larder`
+for the reverse lookup a resolver can't hold forever - and it ships its
+own honest benchmark of when memoization actually pays off (spoiler:
+not always; see its README for the measured case where it doesn't).
 
 ## Notes
 
