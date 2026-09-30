@@ -6,6 +6,30 @@ project follows [Semantic Versioning](https://semver.org/), with the
 usual pre-1.0 caveat that a minor bump may still include a breaking
 change.
 
+## [0.15.0]
+
+### Fixed
+
+- `now_ms + ttl_ms` overflowing `Int64` (a TTL long enough to push the
+  computed deadline past `Int64`'s max value) used to wrap around to a
+  small or negative deadline, making the entry look *already expired*
+  instead of long-lived - the opposite of what a very long TTL asks
+  for. It now saturates to "practically never expires" instead.
+- A custom `weigher` returning zero or a negative weight for some
+  entry used to silently defeat `enforce_capacity`'s `current_weight >
+  capacity` check (that entry contributed nothing, or shrank the
+  total), letting the cache grow without bound. Every entry's weight
+  is now clamped to at least 1 regardless of what `weigher` returns.
+
+### Added
+
+- Explicit, tested contracts for both of the above, plus a negative
+  `ttl_ms`/`default_ttl_ms`: it's honored rather than rejected,
+  resolving to a deadline before `now_ms` so the entry is already
+  expired the moment it's looked up - the same outcome `ttl_ms=0`
+  produces. Four new boundary-condition unit tests cover all three
+  cases; `Larder::new`'s doc comment states them directly.
+
 ## [0.14.0]
 
 ### Added

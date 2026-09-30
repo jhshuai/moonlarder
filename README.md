@@ -413,6 +413,12 @@ not always; see its README for the measured case where it doesn't).
   (`get`/`contains`) or via an explicit `purge_expired`, so a
   write-heavy, rarely-read workload can hold expired entries until one
   of those runs.
+- A negative `ttl_ms`/`default_ttl_ms` is honored, not rejected: the
+  entry is already expired the moment it's looked up. A `ttl_ms` large
+  enough to overflow `Int64` saturates to "practically never expires"
+  rather than wrapping around to a deadline in the past. A `weigher`
+  returning zero or a negative weight is clamped to at least 1, so it
+  can never silently defeat capacity enforcement.
 
 ## License
 

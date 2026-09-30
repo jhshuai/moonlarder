@@ -93,6 +93,54 @@ test "set_many can evict an earlier entry in the same call to make room for a la
 }
 
 ///|
+test "a negative ttl_ms makes an entry expire immediately, the same as ttl_ms=0" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  c.set("a", 1, now_ms=0L, ttl_ms=-100L)
+  assert_eq(c.get("a", now_ms=0L), None)
+  assert_eq(c.stats().expirations, 1)
+}
+
+///|
+test "a negative default_ttl_ms behaves the same way as a negative per-call ttl_ms" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    default_ttl_ms=-1L,
+  )
+  c.set("a", 1, now_ms=0L)
+  assert_eq(c.get("a", now_ms=0L), None)
+}
+
+///|
+test "a ttl_ms large enough to overflow Int64 saturates instead of wrapping into an already-expired deadline" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
+  let near_max : Int64 = 9223372036854775807L - 100L
+  // now_ms + ttl_ms would overflow Int64's range here; plain `+` wraps
+  // around to a large negative number, which would make the entry look
+  // expired the instant it's looked up - the opposite of what asking
+  // for a very long TTL means. It should saturate to "practically
+  // never expires" instead.
+  c.set("a", 1, now_ms=near_max, ttl_ms=1000L)
+  assert_eq(c.get("a", now_ms=near_max + 50L), Some(1))
+}
+
+///|
+test "a weigher returning zero or negative weight is clamped to at least 1, so capacity is still enforced" {
+  let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(
+    capacity=2,
+    weigher=fn(_key, value : Int) { value },
+  )
+  c.set("a", 0, now_ms=0L) // weigher returns 0
+  c.set("b", -5, now_ms=0L) // weigher returns -5
+  c.set("c", 1, now_ms=0L) // weigher returns 1
+  // unclamped, total weight would be 0 + (-5) + 1 = -4, which would
+  // never exceed capacity and would leave the cache growing without
+  // bound; clamped to >= 1 each, the third entry correctly evicts "a"
+  assert_eq(c.size(), 2)
+  assert_eq(c.stats().evictions, 1)
+  assert_eq(c.get("a", now_ms=0L), None)
+}
+
+///|
 test "an entry past its per-call ttl is treated as absent" {
   let c : @moonlarder.Larder[String, Int] = @moonlarder.Larder::new(capacity=2)
   c.set("a", 1, now_ms=0L, ttl_ms=10L)

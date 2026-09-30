@@ -197,13 +197,22 @@ pub extend Larder with @moonbitlang/core/debug.Debug::{to_repr}
 /// `default_ttl_ms`, when given, is the time-to-live applied to entries
 /// that don't specify their own via `set`'s `ttl_ms` argument. Leaving both
 /// unset means an entry never expires on its own and is only removed by
-/// LRU eviction, `remove`, or `clear`.
+/// LRU eviction, `remove`, or `clear`. A negative `default_ttl_ms` (or a
+/// negative per-call `ttl_ms`) is honored rather than rejected: it
+/// resolves to a deadline before `now_ms`, so the entry is already
+/// expired the moment it's looked up - the same outcome `ttl_ms=0`
+/// produces. A `ttl_ms` large enough that `now_ms + ttl_ms` would
+/// overflow `Int64` saturates to "practically never expires" instead
+/// of wrapping around to a deadline in the past.
 ///
 /// `weigher`, when given, turns `capacity` into a weight budget rather
 /// than a plain entry count: each entry contributes `weigher(key,
-/// value)` instead of 1. An entry whose own weight exceeds `capacity` is
-/// still admitted alone (evicting everything else) rather than being
-/// rejected, since `set` never fails.
+/// value)` instead of 1, clamped to at least 1 even if `weigher`
+/// returns zero or a negative number - otherwise such an entry could
+/// silently defeat capacity enforcement altogether. An entry whose own
+/// weight exceeds `capacity` is still admitted alone (evicting
+/// everything else) rather than being rejected, since `set` never
+/// fails.
 ///
 /// `policy` picks the eviction rule; it defaults to `Lru`.
 ///
@@ -389,16 +398,49 @@ fn[V] Slot::is_expired(self : Slot[V], now_ms : Int64) -> Bool {
 }
 
 ///|
+const MAX_INT64 : Int64 = 9223372036854775807L
+
+///|
+const MIN_INT64 : Int64 = -9223372036854775808L
+
+///|
+/// `a + b`, clamped to `Int64`'s range instead of silently wrapping
+/// around on overflow the way plain `+` does. Used for `now_ms + ttl`:
+/// a `ttl_ms` large enough to overflow should behave like "practically
+/// never expires" (saturate to `MAX_INT64`), not wrap around to a
+/// small or negative deadline that makes the entry look *already*
+/// expired - the opposite of what a long TTL asks for.
+fn saturating_add_i64(a : Int64, b : Int64) -> Int64 {
+  let sum = a + b
+  if b >= 0L {
+    if sum < a {
+      MAX_INT64
+    } else {
+      sum
+    }
+  } else if sum > a {
+    MIN_INT64
+  } else {
+    sum
+  }
+}
+
+///|
+/// A negative `ttl_ms` (whether passed to `set`/`touch_ttl` directly,
+/// or via a negative `default_ttl_ms`) is honored rather than
+/// rejected: it resolves to a deadline before `now_ms`, so the entry
+/// is treated as already expired the moment it's looked up - the same
+/// outcome `ttl_ms=0` produces, consistent with `set` never failing.
 fn[K, V] Larder::resolve_expiry(
   self : Larder[K, V],
   now_ms : Int64,
   ttl_ms : Int64?,
 ) -> Int64? {
   match ttl_ms {
-    Some(ttl) => Some(now_ms + ttl)
+    Some(ttl) => Some(saturating_add_i64(now_ms, ttl))
     None =>
       match self.default_ttl_ms {
-        Some(ttl) => Some(now_ms + ttl)
+        Some(ttl) => Some(saturating_add_i64(now_ms, ttl))
         None => None
       }
   }
@@ -1214,7 +1256,13 @@ pub fn[K : Hash + Eq, V] Larder::set(
   ttl_ms? : Int64,
 ) -> Unit {
   let expire_at = self.resolve_expiry(now_ms, ttl_ms)
-  let weight = (self.weigher)(key, value)
+  // Clamped to at least 1: a weigher that returns 0 or negative for
+  // some entry would otherwise let that entry grow current_weight by
+  // nothing (or shrink it), silently defeating enforce_capacity's
+  // `current_weight > capacity` check and letting the cache grow
+  // without bound. Every entry counts for at least 1 regardless of
+  // what a buggy or adversarial weigher returns.
+  let weight = (self.weigher)(key, value).max(1)
   match self.table.get(key) {
     None if self.rejects_admission(key, weight) => {
       self.rejected_count += 1
